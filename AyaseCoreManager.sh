@@ -25,16 +25,46 @@ check_sudo() {
     fi
 }
 
-# 检查并安装mariadb-server
-install_mariadb_server() {
+# 检查所有依赖
+check_dependencies() {
+    echo -e "${YELLOW}正在检查系统依赖...${NC}"
+    
+    # mariadb-server
     if ! dpkg -s mariadb-server &>/dev/null; then
         echo -e "${YELLOW}未安装mariadb-server，正在安装...${NC}"
         sudo apt-get update
-        sudo apt-get install -y mariadb-server
+        sudo apt-get install -y mariadb-server || {
+            echo -e "${RED}mariadb-server 安装失败${NC}"
+            return 1
+        }
         echo -e "${GREEN}mariadb-server 安装完成。${NC}"
-    else
-        echo -e "${GREEN}mariadb-server 已经安装。${NC}"
     fi
+
+    # python3
+    if ! command -v python3 &>/dev/null; then
+        echo -e "${YELLOW}未安装python3，正在安装...${NC}"
+        sudo apt-get install -y python3 || {
+            echo -e "${RED}python3 安装失败${NC}"
+            return 1
+        }
+        echo -e "${GREEN}python3 安装完成。${NC}"
+    fi
+
+    # pv (管道查看器)
+    if ! command -v pv &>/dev/null; then
+        echo -e "${YELLOW}未安装pv工具，进度显示不可用${NC}"
+        read -p "是否立即安装pv？[Y/n]: " install_pv
+        if [[ ! "$install_pv" =~ [nN] ]]; then
+            echo "正在安装pv..."
+            sudo apt-get install -y pv || sudo yum -y install pv || {
+                echo -e "${RED}pv 安装失败${NC}"
+                return 1
+            }
+            echo -e "${GREEN}pv 安装完成。${NC}"
+        fi
+    fi
+
+    return 0
 }
 
 # 获取安装目录
@@ -251,6 +281,7 @@ toggle_remote_access() {
         if [[ "$new_bind" == "0.0.0.0" ]]; then
             if ! $mysql_cmd <<EOF
 GRANT ALL ON *.* TO 'root'@'%' IDENTIFIED BY '$MYSQL_PASSWORD' WITH GRANT OPTION;
+GRANT ALL ON *.* TO 'root'@'127.0.0.1' IDENTIFIED BY '$MYSQL_PASSWORD' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
 EOF
             then
@@ -260,6 +291,7 @@ EOF
         else
             if ! $mysql_cmd <<EOF
 DELETE FROM mysql.user WHERE User='root' AND Host='%';
+GRANT ALL ON *.* TO 'root'@'127.0.0.1' IDENTIFIED BY '$MYSQL_PASSWORD' WITH GRANT OPTION;
 FLUSH PRIVILEGES;
 EOF
             then
@@ -273,8 +305,8 @@ EOF
         echo -e "${GREEN}配置已更新，新绑定地址将在重启后生效${NC}"
 
         # 立即重启确认
-        read -p "是否立即重启使配置生效？[y/N]: " restart_confirm
-        if [[ "$restart_confirm" =~ [yY] ]]; then
+        read -p "是否立即重启使配置生效？[Y/n]: " restart_confirm
+        if [[ ! "$restart_confirm" =~ [nN] ]]; then
             stop_database
             start_database
         else
@@ -366,19 +398,8 @@ import_sql_data() {
     local sql_dir="$SCRIPT_DIR/sql"
     local error_msg=""
     
-    # 检查pv安装
-    local HAS_PV=true
-    if ! command -v pv &>/dev/null; then
-        echo -e "${YELLOW}未检测到pv工具，进度显示不可用${NC}"
-        read -p "是否立即安装pv？[y/N]: " install_pv
-        if [[ "$install_pv" =~ [yY] ]]; then
-            echo "正在安装pv..."
-            sudo apt-get -qq install pv || sudo yum -q install pv
-            HAS_PV=true
-        else
-            HAS_PV=false
-        fi
-    fi
+    # pv检查已移至check_dependencies
+    local HAS_PV=$(command -v pv &>/dev/null && echo true || echo false)
 
     # 检查sql目录是否存在
     if [ ! -d "$sql_dir" ]; then
@@ -859,8 +880,13 @@ validate_and_fix_config_paths() {
 
 # 主函数
 main() {
+        # 检查所有依赖
+    check_dependencies || {
+        echo -e "${RED}依赖检查失败，无法继续初始化${NC}"
+        return 1
+    }
     check_sudo
-    install_mariadb_server
+
     INSTALL_DIR=$DEFAULT_INSTALL_DIR
     local password_file="$INSTALL_DIR/root.password"
 
