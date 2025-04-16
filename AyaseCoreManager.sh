@@ -25,47 +25,31 @@ check_sudo() {
     fi
 }
 
-# 检查所有依赖
-check_dependencies() {
-    echo -e "${YELLOW}正在检查系统依赖...${NC}"
-    
-    # mariadb-server
+install_mariadb_server() {
+    if command -v mysql &>/dev/null; then
+        mysql_full_info=$(mysql --version)
+        client_ver=$(awk '{print $3}' <<< "$mysql_full_info")  # 客户端版本
+        server_ver=$(awk -F 'Distrib |,' '{print $2}' <<< "$mysql_full_info")  # 服务端版本
+        platform=$(awk -F 'for | using' '{print $2}' <<< "$mysql_full_info")   # 平台信息
+
+        # 格式化输出
+        echo -e "${YELLOW}检测到已安装的Mysql/MariaDB数据库："
+        echo -e "客户端版本：${client_ver}"
+        echo -e "服务端版本：${server_ver}"
+        echo -e "运行平台：${platform}"
+        return
+    fi
+
     if ! dpkg -s mariadb-server &>/dev/null; then
         echo -e "${YELLOW}未安装mariadb-server，正在安装...${NC}"
         sudo apt-get update
-        sudo apt-get install -y mariadb-server || {
-            echo -e "${RED}mariadb-server 安装失败${NC}"
-            return 1
-        }
+        sudo apt-get install -y mariadb-server
         echo -e "${GREEN}mariadb-server 安装完成。${NC}"
+    else
+        echo -e "${GREEN}mariadb-server 已经安装。${NC}"
     fi
-
-    # python3
-    if ! command -v python3 &>/dev/null; then
-        echo -e "${YELLOW}未安装python3，正在安装...${NC}"
-        sudo apt-get install -y python3 || {
-            echo -e "${RED}python3 安装失败${NC}"
-            return 1
-        }
-        echo -e "${GREEN}python3 安装完成。${NC}"
-    fi
-
-    # pv (管道查看器)
-    if ! command -v pv &>/dev/null; then
-        echo -e "${YELLOW}未安装pv工具，进度显示不可用${NC}"
-        read -p "是否立即安装pv？[Y/n]: " install_pv
-        if [[ ! "$install_pv" =~ [nN] ]]; then
-            echo "正在安装pv..."
-            sudo apt-get install -y pv || sudo yum -y install pv || {
-                echo -e "${RED}pv 安装失败${NC}"
-                return 1
-            }
-            echo -e "${GREEN}pv 安装完成。${NC}"
-        fi
-    fi
-
-    return 0
 }
+
 
 # 获取安装目录
 get_install_dir() {
@@ -82,8 +66,8 @@ get_install_dir() {
 
 # 检查数据库状态
 check_database_status() {
-    if [ -f "$INSTALL_DIR/mariadb.pid" ]; then
-        local pid=$(cat "$INSTALL_DIR/mariadb.pid")
+    if [ -f "$INSTALL_DIR/mysql.pid" ]; then
+        local pid=$(cat "$INSTALL_DIR/mysql.pid")
         if ps -p "$pid" > /dev/null 2>&1; then
             CURRENT_STATUS="运行中（PID: $pid）"
             return 0
@@ -169,69 +153,111 @@ generate_my_cnf() {
 [mysqld]
 bind-address    = 127.0.0.1
 port            = $PORT
-socket          = $INSTALL_DIR/mariadb.sock
-pid-file        = $INSTALL_DIR/mariadb.pid
+socket          = $INSTALL_DIR/mysql.sock
+pid-file        = $INSTALL_DIR/mysql.pid
 datadir         = $INSTALL_DIR/data
 tmpdir          = $INSTALL_DIR/tmp
-log-bin         = $INSTALL_DIR/logs/binlog/mariadb-bin
-log-error       = $INSTALL_DIR/logs/error/mariadb-error.log
+log-bin         = $INSTALL_DIR/logs/binlog/mysql-bin
+log-error       = $INSTALL_DIR/logs/error/mysql-error.log
 
-max_binlog_size = 512M        # 控制单个binlog文件最大尺寸
-binlog_expire_logs_seconds = 604800  # 自动清理7天前的日志（单位：秒）
+max_binlog_size = 512M
 
 lower_case_table_names=1
 character-set-server  = utf8mb4
 collation-server      = utf8mb4_unicode_ci
 skip-external-locking
 skip-name-resolve
+server-id       = 1
 EOF
     echo -e "${GREEN}配置文件已生成：$MY_CNF${NC}"
 }
 
+# 查找命令的真实路径（处理链接文件）
+find_command_path() {
+    local cmd=$1
+    local path=$(which "$cmd" 2>/dev/null)
+    
+    [ -z "$path" ] && return 1
+    
+    while [ -L "$path" ]; do
+        path=$(readlink -f "$path")
+    done
+    
+    echo "$(dirname "$path")"
+    return 0
+}
+
+# 查找关联命令路径并验证可执行性
+get_related_command_path() {
+    local base_cmd=$1
+    local sub_cmd=$2
+
+    # 查找基础命令目录
+    local base_dir=$(find_command_path "$base_cmd")
+    [ $? -ne 0 ] && return 1
+
+    # 拼接子命令完整路径
+    local sub_path="${base_dir}/${sub_cmd}"
+
+    # 验证可执行文件
+    if [ ! -x "$sub_path" ]; then
+        echo -e "${RED}错误：未找到可执行的 ${sub_cmd}${NC}" >&2
+        echo -e "${YELLOW}请确保该文件存在于: ${sub_path}${NC}" >&2
+        return 1
+    fi
+
+    echo "$sub_path"
+    return 0
+}
 
 # 初始化数据库
 initialize_database() {
     echo -e "${YELLOW}正在初始化数据库...${NC}"
-    #/usr/sbin/mysqld --defaults-file="$MY_CNF" --basedir=/usr --initialize-insecure --user=$(whoami)
-    sudo mysql_install_db  --user=$(whoami) --defaults-file="$MY_CNF" --basedir=/usr 
-    
-    if [ $? -ne 0 ]; then
+
+    # 获取mysql_install_db路径
+    local install_db_path
+    install_db_path=$(get_related_command_path mysql mysql_install_db) || exit 1
+
+    # 计算基础目录（向上返回一级）
+    local basedir="$(dirname "$install_db_path")/.."
+
+    # 统一使用mysql_install_db初始化
+    sudo "$install_db_path" --defaults-file="$MY_CNF" --user=$(whoami) --basedir="$basedir" --datadir="$INSTALL_DIR/data"
+
+    [ $? -ne 0 ] && {
         echo -e "${RED}数据库初始化失败，请检查日志文件。${NC}"
         exit 1
-    fi
+    }
+    
+    echo -e "${GREEN}数据库初始化成功${NC}"
 }
+
 
 # 启动数据库服务
 start_database() {
     # 检查是否存在残留的PID文件
-    if [ -f "$INSTALL_DIR/mariadb.pid" ]; then
-        local pid=$(cat "$INSTALL_DIR/mariadb.pid")
+    if [ -f "$INSTALL_DIR/mysql.pid" ]; then
+        local pid=$(cat "$INSTALL_DIR/mysql.pid")
         if ps -p "$pid" > /dev/null 2>&1; then
             echo -e "${YELLOW}数据库已经在运行（PID: $pid）。${NC}"
             CURRENT_STATUS="运行中（PID: $pid）"
             return 1
         else
             echo -e "${YELLOW}发现残留的PID文件，但进程未运行，清理中...${NC}"
-            rm -f "$INSTALL_DIR/mariadb.pid"
-            rm -f "$INSTALL_DIR/mariadb.sock"
+            rm -f "$INSTALL_DIR/mysql.pid"
+            rm -f "$INSTALL_DIR/mysql.sock"
         fi
     fi
 
     echo -e "${YELLOW}正在启动数据库...${NC}"
-    # 启动命令根据终端模拟器调整
-    if command -v gnome-terminal &>/dev/null; then
-        gnome-terminal --title="MariaDB Instance" -- sudo mysqld --defaults-file="$MY_CNF" --user=$(whoami)
-    elif command -v xterm &>/dev/null; then
-        xterm -title "MariaDB Instance" -e "sudo mysqld --defaults-file=\"$MY_CNF\" --user=$(whoami); bash"
-    else
-        sudo mysqld --defaults-file="$MY_CNF" --user=$(whoami) &
-    fi
-
+    local mysqld_path
+    mysqld_path=$(get_related_command_path mysql mysqld) || exit 1
+    sudo "$mysqld_path" --defaults-file="$MY_CNF" --user=$(whoami) &
     # 等待并检查启动状态
     local wait_seconds=5
     while (( wait_seconds > 0 )); do
-        if [ -f "$INSTALL_DIR/mariadb.pid" ]; then
-            local new_pid=$(cat "$INSTALL_DIR/mariadb.pid")
+        if [ -f "$INSTALL_DIR/mysql.pid" ]; then
+            local new_pid=$(cat "$INSTALL_DIR/mysql.pid")
             if ps -p "$new_pid" > /dev/null 2>&1; then
                 CURRENT_STATUS="运行中（PID: $new_pid）"
                 echo -e "${GREEN}数据库启动成功！${NC}"
@@ -245,7 +271,7 @@ start_database() {
         ((wait_seconds--))
     done
 
-    echo -e "${RED}数据库启动超时，请检查日志文件：$INSTALL_DIR/logs/error/mariadb-error.log${NC}"
+    echo -e "${RED}数据库启动超时，请检查日志文件：$INSTALL_DIR/logs/error/mysql-error.log${NC}"
     CURRENT_STATUS="启动超时"
     return 1
 }
@@ -276,7 +302,7 @@ toggle_remote_access() {
     fi
 
     # 先执行权限变更
-    if mysql_cmd="sudo mysql --socket=$INSTALL_DIR/mariadb.sock -u root -p"$MYSQL_PASSWORD""; then
+    if mysql_cmd="sudo mysql --socket=$INSTALL_DIR/mysql.sock -u root -p"$MYSQL_PASSWORD""; then
         # 执行权限修改SQL
         if [[ "$new_bind" == "0.0.0.0" ]]; then
             if ! $mysql_cmd <<EOF
@@ -318,16 +344,22 @@ EOF
     fi
 }
 
-
 # 设置root密码
 set_root_password() {
     local old_password new_password
     local password_file="$INSTALL_DIR/root.password"
+    local mysql_secret_path="$HOME/.mysql_secret"
+    local has_mysql_secret=0
+    local mysql_options=()  # 新增选项数组
 
-    # 读取旧密码（如果存在）
-    [ -f "$password_file" ] && old_password=$(cat "$password_file") || old_password=""
+    if [ -f "$mysql_secret_path" ]; then
+        old_password=$(sed -n '2p' "$mysql_secret_path")
+        has_mysql_secret=1
+        mysql_options+=(--connect-expired-password)  # 添加特殊选项
+    else
+        [ -f "$password_file" ] && old_password=$(cat "$password_file") || old_password=""
+    fi
 
-    # 获取新密码
     while true; do
         read -sp "请输入root用户的新密码: " new_password
         echo
@@ -338,27 +370,29 @@ set_root_password() {
         break
     done
 
-    # 执行密码修改命令
     if [ -n "$old_password" ]; then
-        sudo mysql --socket="$INSTALL_DIR/mariadb.sock" -u root -p"$old_password" \
+        sudo mysql --socket="$INSTALL_DIR/mysql.sock" "${mysql_options[@]}" -u root -p"$old_password" \
             -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$new_password';" &>/dev/null
     else
-        sudo mysql --socket="$INSTALL_DIR/mariadb.sock" -u root \
+        sudo mysql --socket="$INSTALL_DIR/mysql.sock" -u root \
             -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$new_password';" &>/dev/null
     fi
 
-    # 处理结果
     if [ $? -eq 0 ]; then
+        [ $has_mysql_secret -eq 1 ] && rm -f "$mysql_secret_path"
         echo "$new_password" > "$password_file"
         MYSQL_PASSWORD=$new_password
         echo -e "${GREEN}密码设置成功！${NC}"
     else
         echo -e "${RED}密码设置失败，可能原因：${NC}"
+        [ $has_mysql_secret -eq 1 ] && \
+        echo -e "0. MySQL临时密码已过期（使用来自 $mysql_secret_path 的旧密码: $old_password）。"
         echo -e "1. 旧密码不正确（当前使用旧密码文件: $password_file）"
         echo -e "2. 数据库服务未运行"
         echo -e "3. 缺少sudo权限"
     fi
 }
+
 
 get_port() {
     local default_port=$PORT
@@ -392,14 +426,25 @@ database_init() {
 # 导入SQL数据
 import_sql_data() {
     clear
-    local socket="$INSTALL_DIR/mariadb.sock"
+    local socket="$INSTALL_DIR/mysql.sock"
     local user="root"
     local password="$MYSQL_PASSWORD"
     local sql_dir="$SCRIPT_DIR/sql"
     local error_msg=""
     
-    # pv检查已移至check_dependencies
-    local HAS_PV=$(command -v pv &>/dev/null && echo true || echo false)
+    # 检查pv安装
+    local HAS_PV=true
+    if ! command -v pv &>/dev/null; then
+        echo -e "${YELLOW}未检测到pv工具，进度显示不可用${NC}"
+        read -p "是否立即安装pv？[y/N]: " install_pv
+        if [[ "$install_pv" =~ [yY] ]]; then
+            echo "正在安装pv..."
+            sudo apt-get -qq install pv || sudo yum -q install pv
+            HAS_PV=true
+        else
+            HAS_PV=false
+        fi
+    fi
 
     # 检查sql目录是否存在
     if [ ! -d "$sql_dir" ]; then
@@ -586,15 +631,18 @@ process_sql_import() {
 
 # 停止数据库服务
 stop_database() {
-    if [ ! -f "$INSTALL_DIR/mariadb.pid" ]; then
+    if [ ! -f "$INSTALL_DIR/mysql.pid" ]; then
         echo -e "${YELLOW}数据库似乎没有在运行。${NC}"
         CURRENT_STATUS="未运行"
         return
     fi
 
-    local pid=$(cat "$INSTALL_DIR/mariadb.pid")
+    local pid=$(cat "$INSTALL_DIR/mysql.pid")
     echo -e "${YELLOW}正在停止数据库...${NC}"
-    sudo mysqladmin --socket="$INSTALL_DIR/mariadb.sock" -u root -p"$MYSQL_PASSWORD" shutdown
+    local mysqladmin_path
+    mysqladmin_path=$(get_related_command_path mysql mysqladmin) || exit 1
+
+    sudo "$mysqladmin_path" --socket="$INSTALL_DIR/mysql.sock" -u root -p"$MYSQL_PASSWORD" shutdown
 
     # 等待进程停止
     local wait_seconds=5
@@ -612,8 +660,8 @@ stop_database() {
     else
         CURRENT_STATUS="未运行"
         # 清理残留文件
-        rm -f "$INSTALL_DIR/mariadb.pid"
-        rm -f "$INSTALL_DIR/mariadb.sock"
+        rm -f "$INSTALL_DIR/mysql.pid"
+        rm -f "$INSTALL_DIR/mysql.sock"
         echo -e "${GREEN}数据库已停止。${NC}"
         return 0
     fi
@@ -622,7 +670,7 @@ stop_database() {
 # 显示状态信息
 show_status() {
     clear
-local bind_status
+    local bind_status
 
     if [ -f "$MY_CNF" ]; then
         local current_bind=$(grep -E '^bind-address[[:space:]]*=' "$MY_CNF" | awk -F'=' '{print $2}' | tr -d ' ')
@@ -632,7 +680,7 @@ local bind_status
         bind_status="未配置"
     fi
     
-    echo -e "\n${GREEN}════════════ 数据库实例状态 ════════════${NC}"
+    echo -e "\n${GREEN}══════════════ 数据库状态 ══════════════${NC}"
     echo -e "安装目录：${YELLOW}$INSTALL_DIR${NC}"
     #echo -e "数据目录：${YELLOW}$INSTALL_DIR/data${NC}"
     echo -e "端口号：${YELLOW}$PORT${NC}"
@@ -640,7 +688,7 @@ local bind_status
     echo -e "运行状态：${YELLOW}$CURRENT_STATUS${NC}"
     echo -e "外网访问：${YELLOW}$bind_status${NC}"
 
-    echo -e "${GREEN}═══════════════════════════════════════${NC}"
+    echo -e "${GREEN}═══════════  script by ayase  ══════════${NC}"
 }
 
 # 重新初始化实例
@@ -666,7 +714,7 @@ reinitialize_instance() {
 # 删除数据库
 delete_database() {
     clear
-    local socket="$INSTALL_DIR/mariadb.sock"
+    local socket="$INSTALL_DIR/mysql.sock"
     local user="root"
     local password="$MYSQL_PASSWORD"
     local error_msg=""
@@ -810,8 +858,8 @@ validate_and_fix_config_paths() {
     # 生成期望路径
     local expected_datadir="$install_dir/data"
     local expected_tmpdir="$install_dir/tmp" 
-    local expected_logbin="$install_dir/logs/binlog/mariadb-bin"
-    local expected_logerror="$install_dir/logs/error/mariadb-error.log"
+    local expected_logbin="$install_dir/logs/binlog/mysql-bin"
+    local expected_logerror="$install_dir/logs/error/mysql-error.log"
 
     # 路径比对
     if [ "$current_datadir" != "$expected_datadir" ] || \
@@ -880,13 +928,8 @@ validate_and_fix_config_paths() {
 
 # 主函数
 main() {
-        # 检查所有依赖
-    check_dependencies || {
-        echo -e "${RED}依赖检查失败，无法继续初始化${NC}"
-        return 1
-    }
     check_sudo
-
+    install_mariadb_server
     INSTALL_DIR=$DEFAULT_INSTALL_DIR
     local password_file="$INSTALL_DIR/root.password"
 
@@ -905,7 +948,7 @@ main() {
         show_menu
         handle_input
     else
-        echo -e "${YELLOW}未找到现有实例，开始新实例配置...${NC}"
+        echo -e "${YELLOW}脚本目录下未找到数据库实例，开始新实例配置...${NC}"
         database_init
         show_menu
         handle_input
