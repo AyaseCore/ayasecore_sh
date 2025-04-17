@@ -192,6 +192,12 @@ get_related_command_path() {
     local base_cmd=$1
     local sub_cmd=$2
 
+    # 先检查子命令是否存在
+    if command -v "$sub_cmd" &>/dev/null; then
+        echo "$sub_cmd"
+        return 0
+    fi
+
     # 查找基础命令目录
     local base_dir=$(find_command_path "$base_cmd")
     [ $? -ne 0 ] && return 1
@@ -221,8 +227,9 @@ initialize_database() {
     # 计算基础目录（向上返回一级）
     local basedir="$(dirname "$install_db_path")/.."
 
+    echo -e "${YELLOW}mysql_install_db路径：$basedir${NC}"
     # 统一使用mysql_install_db初始化
-    sudo "$install_db_path" --defaults-file="$MY_CNF" --user=$(whoami) --basedir="$basedir" --datadir="$INSTALL_DIR/data"
+    sudo "$install_db_path" --defaults-file="$MY_CNF" --user=$(whoami) --basedir=/usr --datadir="$INSTALL_DIR/data"
 
     [ $? -ne 0 ] && {
         echo -e "${RED}数据库初始化失败，请检查日志文件。${NC}"
@@ -253,27 +260,7 @@ start_database() {
     local mysqld_path
     mysqld_path=$(get_related_command_path mysql mysqld) || exit 1
     sudo "$mysqld_path" --defaults-file="$MY_CNF" --user=$(whoami) &
-    # 等待并检查启动状态
-    local wait_seconds=5
-    while (( wait_seconds > 0 )); do
-        if [ -f "$INSTALL_DIR/mysql.pid" ]; then
-            local new_pid=$(cat "$INSTALL_DIR/mysql.pid")
-            if ps -p "$new_pid" > /dev/null 2>&1; then
-                CURRENT_STATUS="运行中（PID: $new_pid）"
-                echo -e "${GREEN}数据库启动成功！${NC}"
-                return 0
-            else
-                echo -e "${RED}启动失败，进程未正确启动。${NC}"
-                return 1
-            fi
-        fi
-        sleep 1
-        ((wait_seconds--))
-    done
-
-    echo -e "${RED}数据库启动超时，请检查日志文件：$INSTALL_DIR/logs/error/mysql-error.log${NC}"
-    CURRENT_STATUS="启动超时"
-    return 1
+    return  
 }
 
 toggle_remote_access() {
@@ -420,7 +407,6 @@ database_init() {
     generate_my_cnf
     initialize_database
     start_database
-    set_root_password
 }
 
 # 导入SQL数据
@@ -701,10 +687,10 @@ reinitialize_instance() {
         rm -rf "${INSTALL_DIR:?}/"/*
         # 重新初始化
         create_directories
+        get_port
         generate_my_cnf
         initialize_database
         start_database
-        set_root_password
         echo -e "${GREEN}实例已重新初始化！${NC}"
     else
         echo -e "${YELLOW}已取消重新初始化。${NC}"
@@ -795,52 +781,6 @@ delete_database() {
     done
 }
 
-
-# 显示主菜单
-show_menu() {
-    check_database_status
-    show_status
-    if [ "$CURRENT_STATUS" = "未运行" ]; then
-        echo "1. 启动数据库"
-    else
-        echo "1. 停止数据库"
-    fi
-    echo "2. 修改root密码"
-    echo "3. 切换外网访问"
-    echo "4. 修改端口号"
-    echo "5. 重新初始化实例"
-    echo "6. 导入SQL数据库"
-    echo "7. 删除数据库"
-    echo "8. 退出"
-    echo -e "${GREEN}═══════════════════════════════════════${NC}"
-}
-
-# 处理用户输入
-handle_input() {
-    while true; do
-        read -p "请选择操作 [1-8]: " choice
-        case $choice in
-            1)
-                if [ "$CURRENT_STATUS" = "未运行" ]; then
-                    start_database
-                else
-                    stop_database
-                fi
-                ;;
-            2) set_root_password ;;
-            3) toggle_remote_access ;;
-            4) change_port ;;
-            5) reinitialize_instance ;;
-            6) import_sql_data ;;
-            7) delete_database ;;
-            8) exit 0 ;;
-            *) echo -e "${RED}无效的选项，请重新输入。${NC}" ;;
-        esac
-        read -n 1 -s -r -p "按任意键继续..."
-        show_menu
-    done
-}
-
 # 配置校验
 # 配置校验和修复函数
 validate_and_fix_config_paths() {
@@ -925,6 +865,50 @@ validate_and_fix_config_paths() {
     fi
 }
 
+# 显示主菜单
+show_menu() {
+    check_database_status
+    show_status
+    if [ "$CURRENT_STATUS" = "未运行" ]; then
+        echo "1. 启动数据库"
+    else
+        echo "1. 停止数据库"
+    fi
+    echo "2. 修改root密码"
+    echo "3. 切换外网访问"
+    echo "4. 修改端口号"
+    echo "5. 导入SQL数据库"
+    echo "6. 删除数据库"
+    echo "7. 重新初始化实例"
+    echo "8. 退出"
+    echo -e "${GREEN}═══════════════════════════════════════${NC}"
+}
+
+# 处理用户输入
+handle_input() {
+    while true; do
+        read -p "请选择操作 [1-8]: " choice
+        case $choice in
+            1)
+                if [ "$CURRENT_STATUS" = "未运行" ]; then
+                    start_database
+                else
+                    stop_database
+                fi
+                ;;
+            2) set_root_password ;;
+            3) toggle_remote_access ;;
+            4) change_port ;;
+            5) import_sql_data ;;
+            6) delete_database ;;
+            7) reinitialize_instance ;;
+            8) exit 0 ;;
+            *) echo -e "${RED}无效的选项，请重新输入。${NC}" ;;
+        esac
+        read -n 1 -s -r -p "按任意键继续..."
+        show_menu
+    done
+}
 
 # 主函数
 main() {
@@ -954,7 +938,6 @@ main() {
         handle_input
     fi
 }
-
 
 # 脚本入口
 main
