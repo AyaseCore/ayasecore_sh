@@ -224,19 +224,20 @@ initialize_database() {
     local install_db_path
     install_db_path=$(get_related_command_path mysql mysql_install_db) || exit 1
 
-    # 计算基础目录（向上返回一级）
     local basedir="$(dirname "$install_db_path")/.."
+    if [ "$install_db_path" == "mysql_install_db" ]; then
+        basedir="/usr"
+    fi
 
-    echo -e "${YELLOW}mysql_install_db路径：$basedir${NC}"
-    # 统一使用mysql_install_db初始化
-    sudo "$install_db_path" --defaults-file="$MY_CNF" --user=$(whoami) --basedir=/usr --datadir="$INSTALL_DIR/data"
+    # 使用mysql_install_db初始化
+    sudo "$install_db_path" --defaults-file="$MY_CNF" --user=$(whoami) --basedir="$basedir" --datadir="$INSTALL_DIR/data"
 
     [ $? -ne 0 ] && {
         echo -e "${RED}数据库初始化失败，请检查日志文件。${NC}"
         exit 1
     }
     
-    echo -e "${GREEN}数据库初始化成功${NC}"
+    echo -e "${GREEN}数据库初始化成功。${NC}"
 }
 
 
