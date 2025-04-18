@@ -458,10 +458,15 @@ import_sql_data() {
         return
     fi
 
+    check_database_status || {
+        echo -e "${RED}数据库未运行，无法导入${NC}"
+        return 1
+    }
+
     while true; do
         clear
         echo -e "${GREEN}════════════ 导入SQL数据 ════════════${NC}"
-        echo -e "${YELLOW}注意：将根据文件名创建对应数据库（示例：test.sql → 数据库test）${NC}"
+        echo -e "${YELLOW}注意：请选择要导入的SQL文件，输入对应的序号继续。${NC}"
         
         # 显示可导入选项
         local i=1
