@@ -1033,11 +1033,6 @@ stop_world_server() {
 show_menu() {
     check_database_status
     show_status
-    if [ "$ALL_SERVERS_STATUS" = "未运行" ]; then
-        echo "0. 一键启动所有服务"
-    else
-        echo "0. 停止所有服务"
-    fi
     if [ "$MYSQL_CURRENT_STATUS" = "未运行" ]; then
         echo "1. 启动数据库"
     else
@@ -1068,7 +1063,6 @@ handle_input() {
     while true; do
         read -p "请选择操作 [0-10]: " choice
         case $choice in
-            0) start_all_servers ;;
             1)
                 if [ "$MYSQL_CURRENT_STATUS" = "未运行" ]; then
                     start_database
