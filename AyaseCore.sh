@@ -24,7 +24,7 @@ NC='\033[0m'
 # 检查sudo权限
 check_sudo() {
     if ! sudo -v &>/dev/null; then
-        echo -e "${RED}错误：当前用户没有sudo权限，无法安装mariadb-server。${NC}"
+        echo -e "${RED}错误：当前用户没有sudo权限。${NC}"
         exit 1
     fi
 }
@@ -234,7 +234,7 @@ initialize_database() {
     fi
 
     # 使用mysql_install_db初始化
-    sudo "$install_db_path" --defaults-file="$MY_CNF" --user=$(whoami) --basedir="$basedir" --datadir="$MYSQL_INSTALL_DIR/data"
+    sudo "$install_db_path" --defaults-file="$MY_CNF" --user=$(whoami) --basedir="$basedir" --datadir="$MYSQL_INSTALL_DIR/data" & 
 
     [ $? -ne 0 ] && {
         echo -e "${RED}数据库初始化失败，请检查日志文件。${NC}"
@@ -414,217 +414,6 @@ database_init() {
     start_database
 }
 
-# 导入SQL数据
-import_sql_data() {
-    clear
-    local socket="$MYSQL_INSTALL_DIR/mysql.sock"
-    local user="root"
-    local password="$MYSQL_PASSWORD"
-    local sql_dir="$SCRIPT_DIR/sql"
-    local error_msg=""
-    
-    # 检查pv安装
-    local HAS_PV=true
-    if ! command -v pv &>/dev/null; then
-        echo -e "${YELLOW}未检测到pv工具，进度显示不可用${NC}"
-        read -p "是否立即安装pv？[y/N]: " install_pv
-        if [[ "$install_pv" =~ [yY] ]]; then
-            echo "正在安装pv..."
-            sudo apt-get -qq install pv || sudo yum -q install pv
-            HAS_PV=true
-        else
-            HAS_PV=false
-        fi
-    fi
-
-    # 检查sql目录是否存在
-    if [ ! -d "$sql_dir" ]; then
-        echo -e "${RED}错误：SQL目录 $sql_dir 不存在${NC}"
-        read -n1 -r -p "按任意键返回..."
-        return
-    fi
-
-    # 获取所有SQL文件及大小
-    declare -A file_sizes
-    for file in "$sql_dir"/*.sql; do
-        if [ -f "$file" ]; then
-            size_bytes=$(stat -c %s "$file")
-            size_mb=$(awk "BEGIN {printf \"%.2f\", $size_bytes/1024/1024}")
-            file_sizes["$(basename "$file")"]=$size_mb
-        fi
-    done
-
-    # 获取所有SQL文件
-    local sql_files=($(find "$sql_dir" -maxdepth 1 -name '*.sql' -exec basename {} \;))
-    if [ ${#sql_files[@]} -eq 0 ]; then
-        echo -e "${YELLOW}没有找到可导入的SQL文件${NC}"
-        read -n1 -r -p "按任意键返回..."
-        return
-    fi
-
-    check_database_status || {
-        echo -e "${RED}数据库未运行，无法导入${NC}"
-        return 1
-    }
-
-    while true; do
-        clear
-        echo -e "${GREEN}════════════ 导入SQL数据 ════════════${NC}"
-        echo -e "${YELLOW}注意：请选择要导入的SQL文件，输入对应的序号继续。${NC}"
-        
-        # 显示可导入选项
-        local i=1
-        for file in "${sql_files[@]}"; do
-            size_mb=${file_sizes["$file"]}
-            printf "50%1d. %-20s (%5.2fMB)\n" $i "${file%.*}" $size_mb
-            ((i++))
-        done
-        
-        local all_opt=$((500 + i))
-        echo "${all_opt}. 导入全部SQL文件"
-        echo "500. 返回上一层"
-
-        # 显示错误信息
-        [ -n "$error_msg" ] && echo -e "${RED}${error_msg}${NC}" && error_msg=""
-
-        # 处理用户输入
-        read -p "请选择要导入的SQL文件: " choice
-        
-        # 输入验证
-        if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
-            error_msg="请输入有效数字"
-            continue
-        fi
-
-        # 处理返回
-        if [ "$choice" -eq 500 ]; then
-            return
-        fi
-
-        # 处理导入全部
-        if [ "$choice" -eq "$all_opt" ]; then
-            for file in "${sql_files[@]}"; do
-                process_sql_import "$file" "$sql_dir" "$socket" "$user" "$password" "$HAS_PV"
-            done
-            read -n1 -r -p "按任意键继续..."
-            continue
-        fi
-
-        # 处理单个导入
-        if [ "$choice" -ge 501 ] && [ "$choice" -le $((500 + ${#sql_files[@]})) ]; then
-            local index=$((choice - 501))
-            if [ $index -ge 0 ] && [ $index -lt ${#sql_files[@]} ]; then
-                process_sql_import "${sql_files[$index]}" "$sql_dir" "$socket" "$user" "$password" "$HAS_PV"
-                read -n1 -r -p "按任意键继续..."
-                continue
-            fi
-        fi
-
-        error_msg="无效选项，请重新输入"
-    done
-}
-
-# SQL导入处理函数
-process_sql_import() {
-    local file="$1"
-    local sql_dir="$2"
-    local socket="$3"
-    local user="$4"
-    local password="$5"
-    local has_pv="$6"
-    local db_name="${file%.*}"
-    local sql_file="$sql_dir/$file"
-    
-    echo -e "\n${GREEN}════════════ 处理 $db_name ════════════${NC}"
-
-    # 检查数据库是否存在
-    local db_exists=$(mysql --socket="$socket" -u "$user" -p"$password" \
-        -e "SHOW DATABASES LIKE '$db_name'" 2>/dev/null | grep -o "$db_name")
-
-    if [ -n "$db_exists" ]; then
-        echo -e "${YELLOW}数据库 $db_name 已存在！${NC}"
-        while true; do
-            echo -e "请选择操作："
-            echo "1. 直接导入（可能覆盖现有数据）"
-            echo "2. 删除数据库后重新导入"
-            echo "3. 取消当前导入"
-            read -p "请输入选项 [1-3]: " action
-            case $action in
-                1)
-                    read -p "直接导入可能造成数据冲突，是否继续？[y/N]: " confirm
-                    [[ ! "$confirm" =~ [yY] ]] && return
-                    break
-                    ;;
-                2)
-                    read -p "将永久删除数据库 $db_name，确认吗？[y/N]: " confirm
-                    if [[ "$confirm" =~ [yY] ]]; then
-                        echo -e "${YELLOW}正在删除数据库...${NC}"
-                        if ! mysql --socket="$socket" -u "$user" -p"$password" \
-                            -e "DROP DATABASE \`$db_name\`"; then
-                            echo -e "${RED}数据库删除失败！${NC}"
-                            read -n1 -r -p "按任意键继续..."
-                            return
-                        fi
-                        # 删除后重新创建
-                        mysql --socket="$socket" -u "$user" -p"$password" \
-                            -e "CREATE DATABASE \`$db_name\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-                        break
-                    else
-                        return
-                    fi
-                    ;;
-                3)
-                    echo -e "${YELLOW}已取消导入 $db_name${NC}"
-                    read -n1 -r -p "按任意键继续..."
-                    return
-                    ;;
-                *)
-                    echo -e "${RED}无效选项，请重新输入${NC}"
-                    ;;
-            esac
-        done
-    else
-        # 数据库不存在时创建
-        echo -e "${YELLOW}创建新数据库 $db_name...${NC}"
-        if ! mysql --socket="$socket" -u "$user" -p"$password" \
-            -e "CREATE DATABASE \`$db_name\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"; then
-            echo -e "${RED}数据库创建失败！${NC}"
-            read -n1 -r -p "按任意键继续..."
-            return
-        fi
-    fi
-
-    # 开始导入数据
-    echo -e "正在导入 ${YELLOW}$file${NC}..."
-    import_success=false
-    if $has_pv; then
-        if pv -W -N "导入进度" "$sql_file" | mysql --socket="$socket" -u "$user" -p"$password" "$db_name"; then
-            import_success=true
-        fi
-    else
-        if mysql --socket="$socket" -u "$user" -p"$password" "$db_name" < "$sql_file"; then
-            import_success=true
-        fi
-    fi
-
-    # 处理导入结果
-    if $import_success; then
-        echo -e "${GREEN}成功导入 $db_name 数据！${NC}"
-    else
-        echo -e "${RED}$db_name 数据导入失败！${NC}"
-        # 如果是新创建的数据库，建议删除空库
-        if [ -z "$db_exists" ]; then
-            read -p "是否删除新建的空数据库 $db_name？[y/N]: " clean_confirm
-            if [[ "$clean_confirm" =~ [yY] ]]; then
-                mysql --socket="$socket" -u "$user" -p"$password" -e "DROP DATABASE \`$db_name\`"
-            fi
-        fi
-    fi
-    read -n1 -r -p "按任意键继续..."
-}
-
-
-
 # 停止数据库服务
 stop_database() {
     if [ ! -f "$MYSQL_INSTALL_DIR/mysql.pid" ]; then
@@ -749,90 +538,6 @@ reinitialize_instance() {
     fi
 }
 
-# 删除数据库
-delete_database() {
-    clear
-    local socket="$MYSQL_INSTALL_DIR/mysql.sock"
-    local user="root"
-    local password="$MYSQL_PASSWORD"
-    local error_msg=""
-
-    # 尝试连接数据库以判断是否正在运行
-    if ! mysql --socket="$socket" -u "$user" -p"$password" -e "SELECT 1;" &>/dev/null; then
-        echo -e "${RED}数据库未运行，请先启动数据库。${NC}"
-        read -n1 -r -p "按任意键返回..."
-        return
-    fi
-
-    while true; do
-        clear
-        # 动态绘制菜单界面
-        echo -e "${GREEN}════════════ 删除数据库 ════════════${NC}"
-        
-        # 实时获取数据库列表
-        local databases=($(mysql --socket="$socket" -u "$user" -p"$password" -e "SHOW DATABASES;" 2>/dev/null | grep -Ev "Database|information_schema|performance_schema|mysql|test"))
-
-        if [ ${#databases[@]} -eq 0 ]; then
-            echo -e "${YELLOW}没有可删除的数据库${NC}"
-            echo "600. 返回上一层"
-        else
-            echo -e "${YELLOW}请选择要删除的数据库：${NC}"
-            # 动态生成选项编号
-            local i=1
-            for db in "${databases[@]}"; do
-                echo "$((600 + i)). $db"
-                ((i++))
-            done
-            local all_opt=$((600 + i))
-            echo "${all_opt}. 删除所有数据库"
-            echo "600. 返回上一层"
-        fi
-
-        # 显示错误信息（如果有）
-        [ -n "$error_msg" ] && echo -e "${RED}${error_msg}${NC}" && error_msg=""
-
-        # 处理用户输入
-        read -p "请输入选项: " choice
-        
-        # 输入验证
-        if ! [[ "$choice" =~ ^[0-9]+$ ]]; then
-            error_msg="请输入有效数字"
-            continue
-        fi
-
-        # 处理返回
-        if [ "$choice" -eq 600 ]; then
-            return
-        fi
-
-        # 处理所有删除
-        if [ ${#databases[@]} -gt 0 ] && [ "$choice" -eq "$all_opt" ]; then
-            for db in "${databases[@]}"; do
-                echo -e "删除中 ${YELLOW}${db}${NC}..."
-                mysql --socket="$socket" -u "$user" -p"$password" -e "DROP DATABASE IF EXISTS $db;" 2>/dev/null
-            done
-            echo -e "${GREEN}所有数据库已删除${NC}"
-            read -n1 -r -p "按任意键继续..."
-            continue
-        fi
-
-        # 处理单个删除
-        if [ ${#databases[@]} -gt 0 ] && [ "$choice" -gt 600 ]; then
-            local index=$((choice - 601))
-            if [ $index -ge 0 ] && [ $index -lt ${#databases[@]} ]; then
-                local target_db="${databases[$index]}"
-                echo -e "删除中 ${YELLOW}${target_db}${NC}..."
-                mysql --socket="$socket" -u "$user" -p"$password" -e "DROP DATABASE IF EXISTS $target_db;" 2>/dev/null
-                echo -e "${GREEN}数据库已删除${NC}"
-                read -n1 -r -p "按任意键继续..."
-                continue
-            fi
-        fi
-
-        error_msg="无效选项，请重新输入"
-    done
-}
-
 # 配置校验
 # 配置校验和修复函数
 validate_and_fix_config_paths() {
@@ -915,11 +620,6 @@ validate_and_fix_config_paths() {
     else
         echo -e "${GREEN}配置文件路径校验通过${NC}"
     fi
-}
-
-# 一键启动所有服务
-start_all_servers() {
-    echo "一键启动功能待实现"
 }
 
 # 服务状态检查
@@ -1051,17 +751,15 @@ show_menu() {
     echo "4. 修改root密码"
     echo "5. 切换外网访问"
     echo "6. 修改端口号"
-    echo "7. 导入SQL数据库"
-    echo "8. 删除数据库"
-    echo "9. 重新初始化实例"
-    echo "10. 退出"
+    echo "7. 重新初始化实例"
+    echo "8. 退出"
     echo -e "${GREEN}═══════════════════════════════════════${NC}"
 }
 
 # 处理用户输入
 handle_input() {
     while true; do
-        read -p "请选择操作 [0-10]: " choice
+        read -p "请选择操作 [1-8]: " choice
         case $choice in
             1)
                 if [ "$MYSQL_CURRENT_STATUS" = "未运行" ]; then
@@ -1087,10 +785,8 @@ handle_input() {
             4) set_root_password ;;
             5) toggle_remote_access ;;
             6) change_port ;;
-            7) import_sql_data ;;
-            8) delete_database ;;
-            9) reinitialize_instance ;;
-            10) exit 0 ;;
+            7) reinitialize_instance ;;
+            8) exit 0 ;;
             *) echo -e "${RED}无效的选项，请重新输入。${NC}" ;;
         esac
         read -n 1 -s -r -p "按任意键继续..."
