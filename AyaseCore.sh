@@ -70,17 +70,15 @@ get_install_dir() {
 
 # 检查数据库状态
 check_database_status() {
+    MYSQL_CURRENT_STATUS="未运行"
     if [ -f "$MYSQL_INSTALL_DIR/mysql.pid" ]; then
         local pid=$(cat "$MYSQL_INSTALL_DIR/mysql.pid")
         if ps -p "$pid" > /dev/null 2>&1; then
             MYSQL_CURRENT_STATUS="运行中（PID: $pid）"
             return 0
         else
-            MYSQL_CURRENT_STATUS="未运行(PID文件残留)"
             return 1
         fi
-    else
-        MYSQL_CURRENT_STATUS="未运行"
         return 1
     fi
 }
@@ -234,7 +232,7 @@ initialize_database() {
     fi
 
     # 使用mysql_install_db初始化
-    sudo "$install_db_path" --defaults-file="$MY_CNF" --user=$(whoami) --basedir="$basedir" --datadir="$MYSQL_INSTALL_DIR/data" & 
+    sudo "$install_db_path" --defaults-file="$MY_CNF" --user=$(whoami) --basedir="$basedir" --datadir="$MYSQL_INSTALL_DIR/data" 
 
     [ $? -ne 0 ] && {
         echo -e "${RED}数据库初始化失败，请检查日志文件。${NC}"
@@ -242,6 +240,22 @@ initialize_database() {
     }
     
     echo -e "${GREEN}数据库初始化成功。${NC}"
+    
+    # 询问是否解压数据库文件
+    if [ -f "$SCRIPT_DIR/sql/sql.zip" ]; then
+        read -p "是否要解压数据库文件到$MYSQL_INSTALL_DIR/data目录？[Y/n]: " unzip_confirm
+        unzip_confirm=${unzip_confirm:-Y}
+        if [[ "$unzip_confirm" =~ [Yy] ]]; then
+            echo -e "${YELLOW}正在解压数据库文件...${NC}"
+            if unzip -o "$SCRIPT_DIR/sql/sql.zip" -d "$MYSQL_INSTALL_DIR/data"; then
+                echo -e "${GREEN}数据库文件解压成功${NC}"
+            else
+                echo -e "${RED}数据库文件解压失败${NC}"
+            fi
+        fi
+    else
+        echo -e "${YELLOW}未找到数据库文件 $SCRIPT_DIR/sql/sql.zip${NC}"
+    fi
 }
 
 
@@ -456,19 +470,9 @@ stop_database() {
 show_status() {
     clear
     local bind_status
-
-    # 检查数据库进程
-    if [ -f "$MYSQL_INSTALL_DIR/mysql.pid" ]; then
-        local mysql_pid=$(cat "$MYSQL_INSTALL_DIR/mysql.pid")
-        if ps -p "$mysql_pid" > /dev/null 2>&1; then
-            MYSQL_CURRENT_STATUS="运行中 (PID: $mysql_pid)"
-        else
-            MYSQL_CURRENT_STATUS="未运行 (残留PID: $mysql_pid)"
-            rm -f "$MYSQL_INSTALL_DIR/mysql.pid"
-        fi
-    else
-        MYSQL_CURRENT_STATUS="未运行"
-    fi
+    AUTH_CURRENT_STATUS="未运行"
+    WORLD_CURRENT_STATUS="未运行"
+    check_database_status
 
     # 检查AuthServer进程
     local auth_pid_file="$SCRIPT_DIR/bin/pid/authserver.pid"
@@ -477,11 +481,8 @@ show_status() {
         if ps -p "$auth_pid" > /dev/null 2>&1; then
             AUTH_CURRENT_STATUS="运行中 (PID: $auth_pid)"
         else
-            AUTH_CURRENT_STATUS="未运行 (残留PID: $auth_pid)"
             rm -f "$auth_pid_file"
         fi
-    else
-        AUTH_CURRENT_STATUS="未运行"
     fi
 
     # 检查WorldServer进程
@@ -491,11 +492,8 @@ show_status() {
         if ps -p "$world_pid" > /dev/null 2>&1; then
             WORLD_CURRENT_STATUS="运行中 (PID: $world_pid)"
         else
-            WORLD_CURRENT_STATUS="未运行 (残留PID: $world_pid)"
             rm -f "$world_pid_file"
         fi
-    else
-        WORLD_CURRENT_STATUS="未运行"
     fi
 
     # 检查外网访问配置
@@ -794,9 +792,31 @@ handle_input() {
     done
 }
 
+# 检查软件包是否安装
+check_package() {
+    local package_name=$1
+    if ! command -v "$package_name" &>/dev/null && ! dpkg -s "$package_name" &>/dev/null; then
+        echo -e "${RED}错误：$package_name 未安装${NC}"
+        read -p "是否要安装$package_name？[Y/n]: " install_confirm
+        install_confirm=${install_confirm:-Y}
+        if [[ "$install_confirm" =~ [Yy] ]]; then
+            sudo apt-get update && sudo apt-get install -y "$package_name"
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}安装$package_name失败，请手动安装后重试${NC}"
+                exit 1
+            fi
+        else
+            echo -e "${YELLOW}请先安装$package_name后再运行本脚本${NC}"
+            exit 1
+        fi
+    fi
+}
+
 # 主函数
 main() {
     check_sudo
+    check_package unzip
+    check_package python3
     install_mariadb_server
     MYSQL_INSTALL_DIR="$DEFAULT_INSTALL_DIR/mysql"
     INSTALL_DIR="$DEFAULT_INSTALL_DIR"
