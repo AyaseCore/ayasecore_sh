@@ -2,14 +2,18 @@
 
 # 全局变量声明
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-DEFAULT_INSTALL_DIR="$SCRIPT_DIR/mysql"
+DEFAULT_INSTALL_DIR="$SCRIPT_DIR"
 INSTALL_DIR=""
-PORT="3308"
+MYSQL_INSTALL_DIR=""
+PORT="3333"
 MYSQL_USER="root"
 MYSQL_PASSWORD=""
 MY_CNF=""
-CURRENT_STATUS="未运行"
 ALLOW_REMOTE=false
+MYSQL_CURRENT_STATUS="未运行"
+ALL_SERVERS_STATUS="未运行"
+AUTH_CURRENT_STATUS="未运行"
+WORLD_CURRENT_STATUS="未运行"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -53,30 +57,30 @@ install_mariadb_server() {
 
 # 获取安装目录
 get_install_dir() {
-    read -p "请输入数据库安装目录（默认为 $DEFAULT_INSTALL_DIR）: " user_input
+    read -p "请输入AyaseCore安装目录（默认为 $DEFAULT_INSTALL_DIR）: " user_input
     user_input=${user_input:-$DEFAULT_INSTALL_DIR}
-    INSTALL_DIR=$(realpath -m "$user_input")
+    MYSQL_INSTALL_DIR=$(realpath -m "$user_input")
     
-    if [[ "$INSTALL_DIR" != */mysql ]]; then
-        INSTALL_DIR="$INSTALL_DIR/mysql"
+    if [[ "$MYSQL_INSTALL_DIR" != */mysql ]]; then
+        MYSQL_INSTALL_DIR="$MYSQL_INSTALL_DIR/mysql"
     fi
     
-    echo -e "安装目录设置为：${YELLOW}$INSTALL_DIR${NC}"
+    echo -e "安装目录设置为：${YELLOW}$MYSQL_INSTALL_DIR${NC}"
 }
 
 # 检查数据库状态
 check_database_status() {
-    if [ -f "$INSTALL_DIR/mysql.pid" ]; then
-        local pid=$(cat "$INSTALL_DIR/mysql.pid")
+    if [ -f "$MYSQL_INSTALL_DIR/mysql.pid" ]; then
+        local pid=$(cat "$MYSQL_INSTALL_DIR/mysql.pid")
         if ps -p "$pid" > /dev/null 2>&1; then
-            CURRENT_STATUS="运行中（PID: $pid）"
+            MYSQL_CURRENT_STATUS="运行中（PID: $pid）"
             return 0
         else
-            CURRENT_STATUS="未运行(PID文件残留)"
+            MYSQL_CURRENT_STATUS="未运行(PID文件残留)"
             return 1
         fi
     else
-        CURRENT_STATUS="未运行"
+        MYSQL_CURRENT_STATUS="未运行"
         return 1
     fi
 }
@@ -138,7 +142,7 @@ change_port() {
 # 创建目录结构
 create_directories() {
     echo -e "${YELLOW}正在创建目录结构...${NC}"
-    mkdir -p "$INSTALL_DIR"/{data,logs/{binlog,error},tmp}
+    mkdir -p "$MYSQL_INSTALL_DIR"/{data,logs/{binlog,error},tmp}
     
     if [ $? -ne 0 ]; then
         echo -e "${RED}目录创建失败，请检查权限设置。${NC}"
@@ -148,17 +152,17 @@ create_directories() {
 
 # 生成配置文件
 generate_my_cnf() {
-    MY_CNF="$INSTALL_DIR/my.cnf"
+    MY_CNF="$MYSQL_INSTALL_DIR/my.cnf"
     cat > "$MY_CNF" <<EOF
 [mysqld]
 bind-address    = 127.0.0.1
 port            = $PORT
-socket          = $INSTALL_DIR/mysql.sock
-pid-file        = $INSTALL_DIR/mysql.pid
-datadir         = $INSTALL_DIR/data
-tmpdir          = $INSTALL_DIR/tmp
-log-bin         = $INSTALL_DIR/logs/binlog/mysql-bin
-log-error       = $INSTALL_DIR/logs/error/mysql-error.log
+socket          = $MYSQL_INSTALL_DIR/mysql.sock
+pid-file        = $MYSQL_INSTALL_DIR/mysql.pid
+datadir         = $MYSQL_INSTALL_DIR/data
+tmpdir          = $MYSQL_INSTALL_DIR/tmp
+log-bin         = $MYSQL_INSTALL_DIR/logs/binlog/mysql-bin
+log-error       = $MYSQL_INSTALL_DIR/logs/error/mysql-error.log
 
 max_binlog_size = 512M
 
@@ -230,7 +234,7 @@ initialize_database() {
     fi
 
     # 使用mysql_install_db初始化
-    sudo "$install_db_path" --defaults-file="$MY_CNF" --user=$(whoami) --basedir="$basedir" --datadir="$INSTALL_DIR/data"
+    sudo "$install_db_path" --defaults-file="$MY_CNF" --user=$(whoami) --basedir="$basedir" --datadir="$MYSQL_INSTALL_DIR/data"
 
     [ $? -ne 0 ] && {
         echo -e "${RED}数据库初始化失败，请检查日志文件。${NC}"
@@ -244,16 +248,16 @@ initialize_database() {
 # 启动数据库服务
 start_database() {
     # 检查是否存在残留的PID文件
-    if [ -f "$INSTALL_DIR/mysql.pid" ]; then
-        local pid=$(cat "$INSTALL_DIR/mysql.pid")
+    if [ -f "$MYSQL_INSTALL_DIR/mysql.pid" ]; then
+        local pid=$(cat "$MYSQL_INSTALL_DIR/mysql.pid")
         if ps -p "$pid" > /dev/null 2>&1; then
             echo -e "${YELLOW}数据库已经在运行（PID: $pid）。${NC}"
-            CURRENT_STATUS="运行中（PID: $pid）"
+            MYSQL_CURRENT_STATUS="运行中（PID: $pid）"
             return 1
         else
             echo -e "${YELLOW}发现残留的PID文件，但进程未运行，清理中...${NC}"
-            rm -f "$INSTALL_DIR/mysql.pid"
-            rm -f "$INSTALL_DIR/mysql.sock"
+            rm -f "$MYSQL_INSTALL_DIR/mysql.pid"
+            rm -f "$MYSQL_INSTALL_DIR/mysql.sock"
         fi
     fi
 
@@ -290,7 +294,7 @@ toggle_remote_access() {
     fi
 
     # 先执行权限变更
-    if mysql_cmd="sudo mysql --socket=$INSTALL_DIR/mysql.sock -u root -p"$MYSQL_PASSWORD""; then
+    if mysql_cmd="sudo mysql --socket=$MYSQL_INSTALL_DIR/mysql.sock -u root -p"$MYSQL_PASSWORD""; then
         # 执行权限修改SQL
         if [[ "$new_bind" == "0.0.0.0" ]]; then
             if ! $mysql_cmd <<EOF
@@ -335,7 +339,7 @@ EOF
 # 设置root密码
 set_root_password() {
     local old_password new_password
-    local password_file="$INSTALL_DIR/root.password"
+    local password_file="$MYSQL_INSTALL_DIR/root.password"
     local mysql_secret_path="$HOME/.mysql_secret"
     local has_mysql_secret=0
     local mysql_options=()  # 新增选项数组
@@ -359,10 +363,10 @@ set_root_password() {
     done
 
     if [ -n "$old_password" ]; then
-        sudo mysql --socket="$INSTALL_DIR/mysql.sock" "${mysql_options[@]}" -u root -p"$old_password" \
+        sudo mysql --socket="$MYSQL_INSTALL_DIR/mysql.sock" "${mysql_options[@]}" -u root -p"$old_password" \
             -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$new_password';" &>/dev/null
     else
-        sudo mysql --socket="$INSTALL_DIR/mysql.sock" -u root \
+        sudo mysql --socket="$MYSQL_INSTALL_DIR/mysql.sock" -u root \
             -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$new_password';" &>/dev/null
     fi
 
@@ -413,7 +417,7 @@ database_init() {
 # 导入SQL数据
 import_sql_data() {
     clear
-    local socket="$INSTALL_DIR/mysql.sock"
+    local socket="$MYSQL_INSTALL_DIR/mysql.sock"
     local user="root"
     local password="$MYSQL_PASSWORD"
     local sql_dir="$SCRIPT_DIR/sql"
@@ -623,18 +627,18 @@ process_sql_import() {
 
 # 停止数据库服务
 stop_database() {
-    if [ ! -f "$INSTALL_DIR/mysql.pid" ]; then
+    if [ ! -f "$MYSQL_INSTALL_DIR/mysql.pid" ]; then
         echo -e "${YELLOW}数据库似乎没有在运行。${NC}"
-        CURRENT_STATUS="未运行"
+        MYSQL_CURRENT_STATUS="未运行"
         return
     fi
 
-    local pid=$(cat "$INSTALL_DIR/mysql.pid")
+    local pid=$(cat "$MYSQL_INSTALL_DIR/mysql.pid")
     echo -e "${YELLOW}正在停止数据库...${NC}"
     local mysqladmin_path
     mysqladmin_path=$(get_related_command_path mysql mysqladmin) || exit 1
 
-    sudo "$mysqladmin_path" --socket="$INSTALL_DIR/mysql.sock" -u root -p"$MYSQL_PASSWORD" shutdown
+    sudo "$mysqladmin_path" --socket="$MYSQL_INSTALL_DIR/mysql.sock" -u root -p"$MYSQL_PASSWORD" shutdown
 
     # 等待进程停止
     local wait_seconds=5
@@ -650,10 +654,10 @@ stop_database() {
         echo -e "${RED}停止数据库失败，可能需要强制终止进程。${NC}"
         return 1
     else
-        CURRENT_STATUS="未运行"
+        MYSQL_CURRENT_STATUS="未运行"
         # 清理残留文件
-        rm -f "$INSTALL_DIR/mysql.pid"
-        rm -f "$INSTALL_DIR/mysql.sock"
+        rm -f "$MYSQL_INSTALL_DIR/mysql.pid"
+        rm -f "$MYSQL_INSTALL_DIR/mysql.sock"
         echo -e "${GREEN}数据库已停止。${NC}"
         return 0
     fi
@@ -664,6 +668,48 @@ show_status() {
     clear
     local bind_status
 
+    # 检查数据库进程
+    if [ -f "$MYSQL_INSTALL_DIR/mysql.pid" ]; then
+        local mysql_pid=$(cat "$MYSQL_INSTALL_DIR/mysql.pid")
+        if ps -p "$mysql_pid" > /dev/null 2>&1; then
+            MYSQL_CURRENT_STATUS="运行中 (PID: $mysql_pid)"
+        else
+            MYSQL_CURRENT_STATUS="未运行 (残留PID: $mysql_pid)"
+            rm -f "$MYSQL_INSTALL_DIR/mysql.pid"
+        fi
+    else
+        MYSQL_CURRENT_STATUS="未运行"
+    fi
+
+    # 检查AuthServer进程
+    local auth_pid_file="$SCRIPT_DIR/bin/pid/authserver.pid"
+    if [ -f "$auth_pid_file" ]; then
+        local auth_pid=$(cat "$auth_pid_file")
+        if ps -p "$auth_pid" > /dev/null 2>&1; then
+            AUTH_CURRENT_STATUS="运行中 (PID: $auth_pid)"
+        else
+            AUTH_CURRENT_STATUS="未运行 (残留PID: $auth_pid)"
+            rm -f "$auth_pid_file"
+        fi
+    else
+        AUTH_CURRENT_STATUS="未运行"
+    fi
+
+    # 检查WorldServer进程
+    local world_pid_file="$SCRIPT_DIR/bin/pid/worldserver.pid"
+    if [ -f "$world_pid_file" ]; then
+        local world_pid=$(cat "$world_pid_file")
+        if ps -p "$world_pid" > /dev/null 2>&1; then
+            WORLD_CURRENT_STATUS="运行中 (PID: $world_pid)"
+        else
+            WORLD_CURRENT_STATUS="未运行 (残留PID: $world_pid)"
+            rm -f "$world_pid_file"
+        fi
+    else
+        WORLD_CURRENT_STATUS="未运行"
+    fi
+
+    # 检查外网访问配置
     if [ -f "$MY_CNF" ]; then
         local current_bind=$(grep -E '^bind-address[[:space:]]*=' "$MY_CNF" | awk -F'=' '{print $2}' | tr -d ' ')
         [ -z "$current_bind" ] && current_bind="127.0.0.1"
@@ -672,14 +718,14 @@ show_status() {
         bind_status="未配置"
     fi
     
-    echo -e "\n${GREEN}══════════════ 数据库状态 ══════════════${NC}"
+    echo -e "\n${GREEN}══════════════ 服务器状态 ══════════════${NC}"
+    echo -e "数据库状态：${YELLOW}$MYSQL_CURRENT_STATUS${NC}"
+    echo -e "AuthServer状态：${YELLOW}$AUTH_CURRENT_STATUS${NC}"
+    echo -e "WorldServer状态：${YELLOW}$WORLD_CURRENT_STATUS${NC}"
     echo -e "安装目录：${YELLOW}$INSTALL_DIR${NC}"
-    #echo -e "数据目录：${YELLOW}$INSTALL_DIR/data${NC}"
     echo -e "端口号：${YELLOW}$PORT${NC}"
     echo -e "root密码：${YELLOW}$MYSQL_PASSWORD${NC}"
-    echo -e "运行状态：${YELLOW}$CURRENT_STATUS${NC}"
     echo -e "外网访问：${YELLOW}$bind_status${NC}"
-
     echo -e "${GREEN}═══════════  script by ayase  ══════════${NC}"
 }
 
@@ -690,7 +736,7 @@ reinitialize_instance() {
     if [[ $confirm =~ [yY] ]]; then
         stop_database
         # 强制删除所有实例文件
-        rm -rf "${INSTALL_DIR:?}/"/*
+        rm -rf "${MYSQL_INSTALL_DIR:?}/"/*
         # 重新初始化
         create_directories
         get_port
@@ -706,7 +752,7 @@ reinitialize_instance() {
 # 删除数据库
 delete_database() {
     clear
-    local socket="$INSTALL_DIR/mysql.sock"
+    local socket="$MYSQL_INSTALL_DIR/mysql.sock"
     local user="root"
     local password="$MYSQL_PASSWORD"
     local error_msg=""
@@ -871,44 +917,186 @@ validate_and_fix_config_paths() {
     fi
 }
 
+# 一键启动所有服务
+start_all_servers() {
+    echo "一键启动功能待实现"
+}
+
+# 服务状态检查
+service_is_running() {
+    local pid_file="$1"
+    if [ -f "$pid_file" ]; then
+        local pid=$(cat "$pid_file")
+        if ps -p "$pid" > /dev/null 2>&1; then
+            return 0
+        else
+            rm -f "$pid_file"
+        fi
+    fi
+    return 1
+}
+
+# 启动服务
+start_service() {
+    local service_name="$1"
+    local pid_file="$2"
+    local start_cmd="$3"
+    
+    if service_is_running "$pid_file"; then
+        echo -e "${YELLOW}$service_name已经在运行${NC}"
+        return 1
+    fi
+
+    echo -e "${YELLOW}正在启动$service_name...${NC}"
+    eval "$start_cmd"
+    echo $! > "$pid_file"
+    echo -e "${GREEN}$service_name启动成功${NC}"
+    return 0
+}
+
+# 停止服务
+stop_service() {
+    local service_name="$1"
+    local pid_file="$2"
+    
+    if ! service_is_running "$pid_file"; then
+        echo -e "${YELLOW}$service_name未在运行${NC}"
+        return 1
+    fi
+
+    local pid=$(cat "$pid_file")
+    echo -e "${YELLOW}正在停止$service_name...${NC}"
+    kill "$pid"
+    
+    # 等待3秒检查是否停止
+    for i in {1..3}; do
+        sleep 1
+        if ! ps -p "$pid" > /dev/null 2>&1; then
+            rm -f "$pid_file"
+            echo -e "${GREEN}$service_name已停止${NC}"
+            return 0
+        fi
+    done
+
+    # 如果仍未停止，尝试强制终止
+    if ps -p "$pid" > /dev/null 2>&1; then
+        echo -e "${YELLOW}尝试强制终止$service_name...${NC}"
+        kill -9 "$pid"
+        sleep 1
+    fi
+
+    if ps -p "$pid" > /dev/null 2>&1; then
+        echo -e "${RED}无法停止$service_name (PID: $pid)${NC}"
+        return 1
+    else
+        rm -f "$pid_file"
+        echo -e "${GREEN}$service_name已停止${NC}"
+        return 0
+    fi
+}
+
+# 启动AuthServer
+start_auth_server() {
+    local pid_file="$SCRIPT_DIR/bin/pid/authserver.pid"
+    local start_cmd="(cd \"$SCRIPT_DIR/bin\" && ./authserver &> /dev/null &)"
+    if start_service "AuthServer" "$pid_file" "$start_cmd"; then
+        AUTH_CURRENT_STATUS="运行中"
+    fi
+}
+
+# 停止AuthServer
+stop_auth_server() {
+    local pid_file="$SCRIPT_DIR/bin/pid/authserver.pid"
+    if stop_service "AuthServer" "$pid_file"; then
+        AUTH_CURRENT_STATUS="未运行"
+    fi
+}
+
+# 启动WorldServer
+start_world_server() {
+    local pid_file="$SCRIPT_DIR/bin/pid/worldserver.pid"
+    local start_cmd="(cd \"$SCRIPT_DIR/bin\" && ./worldserver &> /dev/null &)"
+    if start_service "WorldServer" "$pid_file" "$start_cmd"; then
+        WORLD_CURRENT_STATUS="运行中"
+    fi
+}
+
+# 停止WorldServer
+stop_world_server() {
+    local pid_file="$SCRIPT_DIR/bin/pid/worldserver.pid"
+    if stop_service "WorldServer" "$pid_file"; then
+        WORLD_CURRENT_STATUS="未运行"
+    fi
+}
+
 # 显示主菜单
 show_menu() {
     check_database_status
     show_status
-    if [ "$CURRENT_STATUS" = "未运行" ]; then
+    if [ "$ALL_SERVERS_STATUS" = "未运行" ]; then
+        echo "0. 一键启动所有服务"
+    else
+        echo "0. 停止所有服务"
+    fi
+    if [ "$MYSQL_CURRENT_STATUS" = "未运行" ]; then
         echo "1. 启动数据库"
     else
         echo "1. 停止数据库"
     fi
-    echo "2. 修改root密码"
-    echo "3. 切换外网访问"
-    echo "4. 修改端口号"
-    echo "5. 导入SQL数据库"
-    echo "6. 删除数据库"
-    echo "7. 重新初始化实例"
-    echo "8. 退出"
+    if [ "$AUTH_CURRENT_STATUS" = "未运行" ]; then
+        echo "2. 启动AuthServer"
+    else
+        echo "2. 停止AuthServer"
+    fi
+    if [ "$WORLD_CURRENT_STATUS" = "未运行" ]; then
+        echo "3. 启动WorldServer"
+    else
+        echo "3. 停止WorldServer"
+    fi
+    echo "4. 修改root密码"
+    echo "5. 切换外网访问"
+    echo "6. 修改端口号"
+    echo "7. 导入SQL数据库"
+    echo "8. 删除数据库"
+    echo "9. 重新初始化实例"
+    echo "10. 退出"
     echo -e "${GREEN}═══════════════════════════════════════${NC}"
 }
 
 # 处理用户输入
 handle_input() {
     while true; do
-        read -p "请选择操作 [1-8]: " choice
+        read -p "请选择操作 [0-10]: " choice
         case $choice in
+            0) start_all_servers ;;
             1)
-                if [ "$CURRENT_STATUS" = "未运行" ]; then
+                if [ "$MYSQL_CURRENT_STATUS" = "未运行" ]; then
                     start_database
                 else
                     stop_database
                 fi
                 ;;
-            2) set_root_password ;;
-            3) toggle_remote_access ;;
-            4) change_port ;;
-            5) import_sql_data ;;
-            6) delete_database ;;
-            7) reinitialize_instance ;;
-            8) exit 0 ;;
+            2)
+                if [ "$AUTH_CURRENT_STATUS" = "未运行" ]; then
+                    start_auth_server
+                else
+                    stop_auth_server
+                fi
+                ;;
+            3)
+                if [ "$WORLD_CURRENT_STATUS" = "未运行" ]; then
+                    start_world_server
+                else
+                    stop_world_server
+                fi
+                ;;
+            4) set_root_password ;;
+            5) toggle_remote_access ;;
+            6) change_port ;;
+            7) import_sql_data ;;
+            8) delete_database ;;
+            9) reinitialize_instance ;;
+            10) exit 0 ;;
             *) echo -e "${RED}无效的选项，请重新输入。${NC}" ;;
         esac
         read -n 1 -s -r -p "按任意键继续..."
@@ -920,21 +1108,22 @@ handle_input() {
 main() {
     check_sudo
     install_mariadb_server
-    INSTALL_DIR=$DEFAULT_INSTALL_DIR
-    local password_file="$INSTALL_DIR/root.password"
+    MYSQL_INSTALL_DIR="$DEFAULT_INSTALL_DIR/mysql"
+    INSTALL_DIR="$DEFAULT_INSTALL_DIR"
+    local password_file="$MYSQL_INSTALL_DIR/root.password"
 
     # 读取密码
     [ -f "$password_file" ] && MYSQL_PASSWORD=$(cat "$password_file") || MYSQL_PASSWORD=""
 
-    if [ -d "$DEFAULT_INSTALL_DIR/data" ] && [ -f "$DEFAULT_INSTALL_DIR/my.cnf" ]; then
+    if [ -d "$MYSQL_INSTALL_DIR/data" ] && [ -f "$MYSQL_INSTALL_DIR/my.cnf" ]; then
         echo -e "${GREEN}检测到已存在的数据库实例${NC}"
-        MY_CNF="$DEFAULT_INSTALL_DIR/my.cnf"
+        MY_CNF="$MYSQL_INSTALL_DIR/my.cnf"
         PORT=$(grep '^port' "$MY_CNF" | awk -F'=' '{print $2}' | tr -d ' ')
         
         # 调用校验函数
-        validate_and_fix_config_paths "$MY_CNF" "$INSTALL_DIR"
+        validate_and_fix_config_paths "$MY_CNF" "$MYSQL_INSTALL_DIR"
         
-        CURRENT_STATUS="未运行"
+        MYSQL_CURRENT_STATUS="未运行"
         show_menu
         handle_input
     else
