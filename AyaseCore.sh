@@ -256,6 +256,7 @@ initialize_database() {
     else
         echo -e "${YELLOW}未找到数据库文件 $SCRIPT_DIR/sql/sql.zip${NC}"
     fi
+    
 }
 
 
@@ -727,9 +728,36 @@ stop_world_server() {
     fi
 }
 
+# 检查和修复ICU库
+check_and_fix_icu_libs() {
+    local icu_libs=("libicudata.so.70" "libicui18n.so.70" "libicuuc.so.70")
+    local script_lib_dir="$SCRIPT_DIR/bin/lib"
+    local system_lib_dir="/usr/lib"
+
+    for lib in "${icu_libs[@]}"; do
+        local lib_path="$system_lib_dir/$lib"
+        local real_lib_path="$script_lib_dir/${lib}.1"
+
+        if [ -L "$lib_path" ]; then
+            local link_target=$(realpath "$lib_path")
+            if [ ! -f "$link_target" ]; then
+                sudo rm -f "$lib_path"
+                sudo ln -s "$real_lib_path" "$lib_path"
+                echo -e "${YELLOW}修复ICU库链接: $lib_path -> $real_lib_path${NC}"
+            fi
+        elif [ ! -f "$lib_path" ]; then
+            sudo ln -s "$real_lib_path" "$lib_path"
+            echo -e "${YELLOW}创建ICU库链接: $lib_path -> $real_lib_path${NC}"
+        else
+            echo -e "${GREEN}ICU库检查通过: $lib_path${NC}"
+        fi
+    done
+}
+
 # 显示主菜单
 show_menu() {
     check_database_status
+    check_and_fix_icu_libs  
     show_status
     if [ "$MYSQL_CURRENT_STATUS" = "未运行" ]; then
         echo "1. 启动数据库"
