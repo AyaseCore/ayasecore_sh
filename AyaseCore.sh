@@ -5,6 +5,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 DEFAULT_INSTALL_DIR="$SCRIPT_DIR"
 INSTALL_DIR=""
 MYSQL_INSTALL_DIR=""
+CORE_INSTALL_DIR=""
 PORT="3333"
 MYSQL_USER="root"
 MYSQL_PASSWORD=""
@@ -14,6 +15,7 @@ MYSQL_CURRENT_STATUS="未运行"
 ALL_SERVERS_STATUS="未运行"
 AUTH_CURRENT_STATUS="未运行"
 WORLD_CURRENT_STATUS="未运行"
+NEED_TO_COPY=false
 
 # 颜色定义
 RED='\033[0;31m'
@@ -57,15 +59,122 @@ install_mariadb_server() {
 
 # 获取安装目录
 get_install_dir() {
-    read -p "请输入AyaseCore安装目录（默认为 $DEFAULT_INSTALL_DIR）: " user_input
-    user_input=${user_input:-$DEFAULT_INSTALL_DIR}
-    MYSQL_INSTALL_DIR=$(realpath -m "$user_input")
+    local confirmed="n"
+    while [ "$confirmed" != "y" ]; do
+        read -p "请输入AyaseCore安装目录（默认为: $DEFAULT_INSTALL_DIR）: " user_input
+        user_input=${user_input:-$DEFAULT_INSTALL_DIR}
+        INSTALL_DIR=$(realpath -m "$user_input")
+        
+        MYSQL_INSTALL_DIR="$INSTALL_DIR/mysql"
+        CORE_INSTALL_DIR="$INSTALL_DIR/bin"
+        MY_CNF="$MYSQL_INSTALL_DIR/my.cnf"
+        
+        echo -e "安装目录设置为：${GREEN}$INSTALL_DIR${NC}"
+        echo -e "核心(bin)目录设置为：${GREEN}$INSTALL_DIR${YELLOW}/bin${NC}"
+        echo -e "数据库(mysql)目录设置为：${GREEN}$INSTALL_DIR${YELLOW}/mysql${NC}"
+        
+        read -p "确认路径是否正确 (y/N): " confirmed
+        if [ "$confirmed" == "n" ]; then
+            echo "请重新输入安装目录。"
+        fi
+    done
+}
+
+
+# 检查核心服务是否安装
+check_core_installed() {
+    if [ -f "$CORE_INSTALL_DIR/authserver" ] && [ -f "$CORE_INSTALL_DIR/worldserver" ]; then
+        return 0
+    fi
+    return 1
+}
+
+# 初始化核心服务
+init_core() {
+    echo -e "${YELLOW}正在初始化核心服务...${NC}"
     
-    if [[ "$MYSQL_INSTALL_DIR" != */mysql ]]; then
-        MYSQL_INSTALL_DIR="$MYSQL_INSTALL_DIR/mysql"
+    # 检查bin.zip是否存在
+    if [ ! -f "$SCRIPT_DIR/bin.zip" ]; then
+        echo -e "${RED}错误：找不到bin.zip文件${NC}"
+        return 1
     fi
     
-    echo -e "安装目录设置为：${YELLOW}$MYSQL_INSTALL_DIR${NC}"
+    # 解压bin.zip
+    echo -e "${YELLOW}正在解压bin.zip...${NC}"
+    unzip -o "$SCRIPT_DIR/bin.zip" -d "$INSTALL_DIR"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}解压bin.zip失败${NC}"
+        return 1
+    fi
+    
+    # 设置执行权限
+    chmod +x "$CORE_INSTALL_DIR/authserver"
+    chmod +x "$CORE_INSTALL_DIR/worldserver"
+    
+    echo -e "${GREEN}核心服务初始化完成${NC}"
+    return 0
+}
+
+# 检查安装状态
+check_installation() {
+    local core_need_init=false
+    local mysql_need_init=false
+    
+    # 检查核心服务
+    if ! check_core_installed; then
+        echo -e "${YELLOW}核心服务未安装${NC}"
+        read -p "是否初始化核心服务？[Y/n]: " confirm
+        confirm=${confirm:-Y}
+        if [[ "$confirm" =~ [Yy] ]]; then
+            core_need_init=true
+        else
+            echo -e "${YELLOW}已跳过核心服务初始化${NC}"
+            return 1
+        fi
+    fi
+    
+    # 检查数据库
+    if [ ! -d "$MYSQL_INSTALL_DIR/data" ] || [ ! -f "$MYSQL_INSTALL_DIR/my.cnf" ]; then
+        echo -e "${YELLOW}数据库未初始化${NC}"
+        read -p "是否初始化数据库？[Y/n]: " confirm
+        confirm=${confirm:-Y}
+        if [[ "$confirm" =~ [Yy] ]]; then
+            mysql_need_init=true
+        else
+            echo -e "${YELLOW}已跳过数据库初始化${NC}"
+            return 1
+        fi
+    fi
+    
+    # 如果需要初始化但安装目录未设置
+    if { $core_need_init || $mysql_need_init; }; then
+        get_install_dir
+        if [ "$INSTALL_DIR" != "$DEFAULT_INSTALL_DIR" ]; then
+            NEED_TO_COPY=true
+        fi
+    fi
+    
+    # 执行初始化
+    if $core_need_init; then
+        init_core || return 1
+    fi
+    
+    if $mysql_need_init; then
+        echo -e "${YELLOW}正在初始化数据库服务...${NC}"
+        database_init || return 1
+    fi
+    
+    # 如果需要复制文件
+    if $NEED_TO_COPY; then
+        echo -e "${YELLOW}正在复制必要文件到安装目录...${NC}"
+        cp "$SCRIPT_DIR/AyaseCore.sh" "$INSTALL_DIR/"
+        cp "$SCRIPT_DIR/bin.zip" "$INSTALL_DIR/"
+        [ -f "$SCRIPT_DIR/sql.zip" ] && cp "$SCRIPT_DIR/sql.zip" "$INSTALL_DIR/"
+        chmod +x "$INSTALL_DIR/AyaseCore.sh"
+        echo -e "${GREEN}文件复制完成${NC}"
+    fi
+    
+    return 0
 }
 
 # 检查数据库状态
@@ -140,7 +249,7 @@ change_port() {
 # 创建目录结构
 create_directories() {
     echo -e "${YELLOW}正在创建目录结构...${NC}"
-    mkdir -p "$MYSQL_INSTALL_DIR"/{data,logs/{binlog,error},tmp}
+    mkdir -p "$MYSQL_INSTALL_DIR"/{data,logs/binlog,tmp}
     
     if [ $? -ne 0 ]; then
         echo -e "${RED}目录创建失败，请检查权限设置。${NC}"
@@ -160,15 +269,28 @@ pid-file        = $MYSQL_INSTALL_DIR/mysql.pid
 datadir         = $MYSQL_INSTALL_DIR/data
 tmpdir          = $MYSQL_INSTALL_DIR/tmp
 log-bin         = $MYSQL_INSTALL_DIR/logs/binlog/mysql-bin
-log-error       = $MYSQL_INSTALL_DIR/logs/error/mysql-error.log
+log-error       = $MYSQL_INSTALL_DIR/logs/mysql-error.log
 
 max_binlog_size = 512M
-
+query_cache_size=186M
+table_cache=1520
+tmp_table_size=607M
+thread_cache_size=38
+default-storage-engine=MyISAM
+read_buffer_size=64K
+read_rnd_buffer_size=256K
+sort_buffer_size=256K
+innodb_flush_log_at_trx_commit=1
+innodb_log_buffer_size=6M
+innodb_buffer_pool_size=563M
+innodb_log_file_size=113M
+innodb_thread_concurrency=18
+max_allowed_packet=500M
+wait_timeout=288000
+interactive_timeout = 288000
 lower_case_table_names=1
 character-set-server  = utf8mb4
 collation-server      = utf8mb4_unicode_ci
-skip-external-locking
-skip-name-resolve
 server-id       = 1
 EOF
     echo -e "${GREEN}配置文件已生成：$MY_CNF${NC}"
@@ -242,19 +364,19 @@ initialize_database() {
     echo -e "${GREEN}数据库初始化成功。${NC}"
     
     # 询问是否解压数据库文件
-    if [ -f "$SCRIPT_DIR/sql/sql.zip" ]; then
+    if [ -f "$SCRIPT_DIR/sql.zip" ]; then
         read -p "是否要解压数据库文件到$MYSQL_INSTALL_DIR/data目录？[Y/n]: " unzip_confirm
         unzip_confirm=${unzip_confirm:-Y}
         if [[ "$unzip_confirm" =~ [Yy] ]]; then
             echo -e "${YELLOW}正在解压数据库文件...${NC}"
-            if unzip -o "$SCRIPT_DIR/sql/sql.zip" -d "$MYSQL_INSTALL_DIR/data"; then
+            if unzip -o "$SCRIPT_DIR/sql.zip" -d "$MYSQL_INSTALL_DIR/data"; then
                 echo -e "${GREEN}数据库文件解压成功${NC}"
             else
                 echo -e "${RED}数据库文件解压失败${NC}"
             fi
         fi
     else
-        echo -e "${YELLOW}未找到数据库文件 $SCRIPT_DIR/sql/sql.zip${NC}"
+        echo -e "${YELLOW}未找到数据库文件 $SCRIPT_DIR/sql.zip${NC}"
     fi
     
 }
@@ -421,12 +543,11 @@ get_port() {
 
 # 数据库初始化流程
 database_init() {
-    get_install_dir
     create_directories
     get_port
     generate_my_cnf
     initialize_database
-    start_database
+    #start_database
 }
 
 # 停止数据库服务
@@ -476,7 +597,7 @@ show_status() {
     check_database_status
 
     # 检查AuthServer进程
-    local auth_pid_file="$SCRIPT_DIR/bin/pid/authserver.pid"
+    local auth_pid_file="$CORE_INSTALL_DIR/pid/authserver.pid"
     if [ -f "$auth_pid_file" ]; then
         local auth_pid=$(cat "$auth_pid_file")
         if ps -p "$auth_pid" > /dev/null 2>&1; then
@@ -487,7 +608,7 @@ show_status() {
     fi
 
     # 检查WorldServer进程
-    local world_pid_file="$SCRIPT_DIR/bin/pid/worldserver.pid"
+    local world_pid_file="$CORE_INSTALL_DIR/pid/worldserver.pid"
     if [ -f "$world_pid_file" ]; then
         local world_pid=$(cat "$world_pid_file")
         if ps -p "$world_pid" > /dev/null 2>&1; then
@@ -696,8 +817,8 @@ stop_service() {
 
 # 启动AuthServer
 start_auth_server() {
-    local pid_file="$SCRIPT_DIR/bin/pid/authserver.pid"
-    local start_cmd="(cd \"$SCRIPT_DIR/bin\" && ./authserver &> /dev/null &)"
+    local pid_file="$CORE_INSTALL_DIR/pid/authserver.pid"
+    local start_cmd="(cd \"$CORE_INSTALL_DIR\" && ./authserver &> /dev/null &)"
     if start_service "AuthServer" "$pid_file" "$start_cmd"; then
         AUTH_CURRENT_STATUS="运行中"
     fi
@@ -705,7 +826,7 @@ start_auth_server() {
 
 # 停止AuthServer
 stop_auth_server() {
-    local pid_file="$SCRIPT_DIR/bin/pid/authserver.pid"
+    local pid_file="$CORE_INSTALL_DIR/pid/authserver.pid"
     if stop_service "AuthServer" "$pid_file"; then
         AUTH_CURRENT_STATUS="未运行"
     fi
@@ -713,8 +834,8 @@ stop_auth_server() {
 
 # 启动WorldServer
 start_world_server() {
-    local pid_file="$SCRIPT_DIR/bin/pid/worldserver.pid"
-    local start_cmd="(cd \"$SCRIPT_DIR/bin\" && ./worldserver &> /dev/null &)"
+    local pid_file="$CORE_INSTALL_DIR/pid/worldserver.pid"
+    local start_cmd="(cd \"$CORE_INSTALL_DIR\" && ./worldserver &> /dev/null &)"
     if start_service "WorldServer" "$pid_file" "$start_cmd"; then
         WORLD_CURRENT_STATUS="运行中"
     fi
@@ -722,7 +843,7 @@ start_world_server() {
 
 # 停止WorldServer
 stop_world_server() {
-    local pid_file="$SCRIPT_DIR/bin/pid/worldserver.pid"
+    local pid_file="$CORE_INSTALL_DIR/pid/worldserver.pid"
     if stop_service "WorldServer" "$pid_file"; then
         WORLD_CURRENT_STATUS="未运行"
     fi
@@ -731,7 +852,7 @@ stop_world_server() {
 # 检查和修复ICU库
 check_and_fix_icu_libs() {
     local icu_libs=("libicudata.so.70" "libicui18n.so.70" "libicuuc.so.70")
-    local script_lib_dir="$SCRIPT_DIR/bin/lib"
+    local script_lib_dir="$CORE_INSTALL_DIR/lib"
     local system_lib_dir="/usr/lib"
 
     for lib in "${icu_libs[@]}"; do
@@ -846,30 +967,26 @@ main() {
     check_package unzip
     check_package python3
     install_mariadb_server
+    
+    # 设置默认安装目录
     MYSQL_INSTALL_DIR="$DEFAULT_INSTALL_DIR/mysql"
+    CORE_INSTALL_DIR="$DEFAULT_INSTALL_DIR/bin"
     INSTALL_DIR="$DEFAULT_INSTALL_DIR"
+    MY_CNF="$MYSQL_INSTALL_DIR/my.cnf"
     local password_file="$MYSQL_INSTALL_DIR/root.password"
 
     # 读取密码
     [ -f "$password_file" ] && MYSQL_PASSWORD=$(cat "$password_file") || MYSQL_PASSWORD=""
 
-    if [ -d "$MYSQL_INSTALL_DIR/data" ] && [ -f "$MYSQL_INSTALL_DIR/my.cnf" ]; then
-        echo -e "${GREEN}检测到已存在的数据库实例${NC}"
-        MY_CNF="$MYSQL_INSTALL_DIR/my.cnf"
-        PORT=$(grep '^port' "$MY_CNF" | awk -F'=' '{print $2}' | tr -d ' ')
-        
-        # 调用校验函数
-        validate_and_fix_config_paths "$MY_CNF" "$MYSQL_INSTALL_DIR"
-        
-        MYSQL_CURRENT_STATUS="未运行"
-        show_menu
-        handle_input
-    else
-        echo -e "${YELLOW}脚本目录下未找到数据库实例，开始新实例配置...${NC}"
-        database_init
-        show_menu
-        handle_input
+    # 检查并初始化服务
+    if ! check_installation; then
+        echo -e "${RED}服务初始化失败或已取消${NC}"
+        exit 1
     fi
+
+    # 显示菜单
+    show_menu
+    handle_input
 }
 
 # 脚本入口
