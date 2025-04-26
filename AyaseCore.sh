@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# 安装包解压
+#sudo apt update && sudo apt install -y unzip && unzip -o server-bin.zip && chmod +x AyaseCore.sh && sudo ./AyaseCore.sh
+
 # 全局变量声明
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 DEFAULT_INSTALL_DIR="$SCRIPT_DIR"
@@ -50,9 +53,9 @@ manage_swap() {
         fi
     fi
 
-    echo -e "${BLUE}════════════ SWAP操作 ════════════${NC}"
+    echo -e "${BLUE}════════════ SWAP设置 ════════════${NC}"
     echo "1. 设置SWAP大小"
-    echo "2. 设置swappiness值"
+    echo "2. 设置swappiness(SWAP优先级)"
     echo "3. 禁用并删除本脚本的SWAP"
     echo "4. 返回主菜单"
     echo -e "${BLUE}═════════════════════════════════${NC}"
@@ -71,17 +74,20 @@ manage_swap() {
 
 # 显示SWAP状态
 show_swap_status() {
-    echo -e "${YELLOW}当前内存使用情况:${NC}"
-    free -h | awk 'NR==2 {print "总内存: " $2, "已用内存: " $3, "空闲内存: " $4, "缓冲: " $6, "缓存: " $7}'
-    
-    echo -e "${YELLOW}当前SWAP使用情况:${NC}"
-    free -h | awk 'NR==3 {print "总SWAP: " $2, "已用SWAP: " $3, "空闲SWAP: " $4}'
-    
+    show_memoery_status
     echo -e "${YELLOW}当前swappiness值:${NC}"
     cat /proc/sys/vm/swappiness
     
     echo -e "${YELLOW}当前SWAP设备:${NC}"
     swapon --show
+}
+
+show_memoery_status() {
+    echo -e "${YELLOW}当前内存使用情况:${NC}"
+    free -h | awk 'NR==2 {print "总内存: " $2, "已用内存: " $3, "空闲内存: " $4, "缓冲: " $6, "缓存: " $7}'
+    
+    echo -e "${YELLOW}当前SWAP使用情况:${NC}"
+    free -h | awk 'NR==3 {print "总SWAP: " $2, "已用SWAP: " $3, "空闲SWAP: " $4}'
 }
 
 
@@ -141,6 +147,9 @@ set_swappiness() {
     echo -e "${YELLOW}设置swappiness值${NC}"
     
     echo -e "${BLUE}当前swappiness值: $(cat /proc/sys/vm/swappiness)${NC}"
+    echo -e "${BLUE}该值控制系统内存不足时，使用Swap的优先级。${NC}"
+    echo -e "${BLUE}值越高，系统内存不足时，越倾向于使用Swap。${NC}"
+
     echo -e "${BLUE}建议值: 10-60 (默认60)${NC}"
     echo -e "${BLUE}对于数据库服务器建议10-30${NC}"
     
@@ -163,7 +172,6 @@ set_swappiness() {
     fi
     
     echo -e "${GREEN}swappiness设置完成!${NC}"
-    show_swap_status
 }
 
 # 禁用SWAP
@@ -813,9 +821,12 @@ show_status() {
     fi
     
     echo -e "\n${GREEN}══════════════ 服务器状态 ══════════════${NC}"
+    show_memoery_status
+    echo -e "\n${GREEN}═══════════════════════════════════════${NC}"
     echo -e "数据库状态：${YELLOW}$MYSQL_CURRENT_STATUS${NC}"
     echo -e "AuthServer状态：${YELLOW}$AUTH_CURRENT_STATUS${NC}"
     echo -e "WorldServer状态：${YELLOW}$WORLD_CURRENT_STATUS${NC}"
+    
     echo -e "安装目录：${YELLOW}$INSTALL_DIR${NC}"
     echo -e "端口号：${YELLOW}$PORT${NC}"
     echo -e "root密码：${YELLOW}$MYSQL_PASSWORD${NC}"
@@ -1019,6 +1030,18 @@ stop_auth_server() {
 
 # 启动WorldServer
 start_world_server() {
+    local free_memory=$(free -m | awk 'NR==2 {print $4}')
+    local swap_free_memory=$(free -m | awk 'NR==3 {print $4}')
+
+    local total_free_memory=$((free_memory + swap_free_memory))
+
+    echo -e "${YELLOW}检测到可用内存: $total_free_memory M, 其中空闲内存: $free_memory M, 交换内存: $swap_free_memory M${NC}"
+
+    local need_memory=2500 # 2.5G
+    if [ "$total_free_memory" -lt "$need_memory" ]; then
+        echo -e "${RED}可用内存小于2.5G！worldserver可能无法启动, 请设置swap或增加内存。${NC}"
+        return 1
+    fi
     local pid_file="$CORE_INSTALL_DIR/pid/worldserver.pid"
     local start_cmd="(cd \"$CORE_INSTALL_DIR\" && ./worldserver &> /dev/null &)"
     if start_service "WorldServer" "$pid_file" "$start_cmd"; then
@@ -1172,10 +1195,8 @@ main() {
         exit 1
     fi
 
-    # 显示菜单
     show_menu
     handle_input
 }
 
-# 脚本入口
 main
