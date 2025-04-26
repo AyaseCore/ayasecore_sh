@@ -21,7 +21,184 @@ NEED_TO_COPY=false
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
 NC='\033[0m'
+
+# 初始化时检查并启用swap文件
+init_swap() {
+    local swap_file="$INSTALL_DIR/swapfile"
+    if [ -f "$swap_file" ]; then
+        if ! swapon --show | grep -q "$swap_file"; then
+            echo -e "${YELLOW}检测到未启用的swap文件，正在启用...${NC}"
+            sudo swapon "$swap_file" && echo -e "${GREEN}已启用swap文件${NC}"
+        fi
+    fi
+}
+
+# SWAP管理函数
+manage_swap() {
+    clear
+    show_swap_status
+    
+    # 检查本脚本的swap文件
+    local swap_file="$INSTALL_DIR/swapfile"
+    if [ -f "$swap_file" ]; then
+        if swapon --show | grep -q "$swap_file"; then
+            echo -e "${GREEN}本脚本的swap文件已启用: $swap_file${NC}"
+        else
+            echo -e "${YELLOW}本脚本的swap文件未启用: $swap_file${NC}"
+        fi
+    fi
+
+    echo -e "${BLUE}════════════ SWAP操作 ════════════${NC}"
+    echo "1. 设置SWAP大小"
+    echo "2. 设置swappiness值"
+    echo "3. 禁用并删除本脚本的SWAP"
+    echo "4. 返回主菜单"
+    echo -e "${BLUE}═════════════════════════════════${NC}"
+    
+    read -p "请选择操作 [1-4]: " choice
+    case $choice in
+        1) set_swap_size ;;
+        2) set_swappiness ;;
+        3) disable_swap ;;
+        4) return ;;
+        *) echo -e "${RED}无效选项，请重新输入${NC}" ;;
+    esac
+    read -n 1 -s -r -p "按任意键继续..."
+    manage_swap
+}
+
+# 显示SWAP状态
+show_swap_status() {
+    echo -e "${YELLOW}当前内存使用情况:${NC}"
+    free -h | awk 'NR==2 {print "总内存: " $2, "已用内存: " $3, "空闲内存: " $4, "缓冲: " $6, "缓存: " $7}'
+    
+    echo -e "${YELLOW}当前SWAP使用情况:${NC}"
+    free -h | awk 'NR==3 {print "总SWAP: " $2, "已用SWAP: " $3, "空闲SWAP: " $4}'
+    
+    echo -e "${YELLOW}当前swappiness值:${NC}"
+    cat /proc/sys/vm/swappiness
+    
+    echo -e "${YELLOW}当前SWAP设备:${NC}"
+    swapon --show
+}
+
+
+# 设置SWAP大小
+set_swap_size() {
+    check_sudo
+    echo -e "${YELLOW}设置SWAP大小${NC}"
+    
+    local swap_file="$INSTALL_DIR/swapfile"
+    local mem_total=$(get_memory_size)
+    local swap_recommend=$((mem_total * 2))
+    
+    echo -e "${BLUE}当前内存: ${mem_total}MB${NC}"
+    echo -e "${BLUE}推荐SWAP大小: ${swap_recommend}MB (内存的2倍)${NC}"
+    
+    read -p "请输入SWAP大小(MB): " swap_size
+    if ! [[ "$swap_size" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}错误: 请输入有效的数字${NC}"
+        return 1
+    fi
+    
+    # 检查磁盘空间
+    local avail_space=$(df -m "$INSTALL_DIR" | awk 'NR==2 {print $4}')
+    if [ "$avail_space" -lt "$swap_size" ]; then
+        echo -e "${RED}错误: 磁盘空间不足!${NC}"
+        echo -e "${YELLOW}可用空间: ${avail_space}MB, 需要空间: ${swap_size}MB${NC}"
+        return 1
+    fi
+    
+    read -p "确认在 $swap_file 创建 ${swap_size}MB swap文件? [y/N]: " confirm
+    [[ "$confirm" =~ [yY] ]] || return
+    
+    # 禁用现有swap
+    if [ -f "$swap_file" ]; then
+        if swapon --show | grep -q "$swap_file"; then
+            sudo swapoff "$swap_file"
+        fi
+        sudo rm -f "$swap_file"
+    fi
+    
+    # 创建swap文件
+    echo -e "${YELLOW}正在创建swap文件...${NC}"
+    sudo dd if=/dev/zero of="$swap_file" bs=1M count=$swap_size status=progress
+    sudo chmod 600 "$swap_file"
+    
+    # 设置swap
+    echo -e "${YELLOW}设置swap文件...${NC}"
+    sudo mkswap "$swap_file"
+    sudo swapon "$swap_file"
+    
+    echo -e "${GREEN}SWAP设置完成!${NC}"
+}
+
+# 设置swappiness值
+set_swappiness() {
+    check_sudo
+    echo -e "${YELLOW}设置swappiness值${NC}"
+    
+    echo -e "${BLUE}当前swappiness值: $(cat /proc/sys/vm/swappiness)${NC}"
+    echo -e "${BLUE}建议值: 10-60 (默认60)${NC}"
+    echo -e "${BLUE}对于数据库服务器建议10-30${NC}"
+    
+    read -p "请输入新的swappiness值(0-100): " swappiness
+    if ! [[ "$swappiness" =~ ^[0-9]+$ ]] || [ "$swappiness" -gt 100 ]; then
+        echo -e "${RED}错误: 请输入0-100之间的数字${NC}"
+        return 1
+    fi
+    
+    # 临时设置
+    echo -e "${YELLOW}临时设置swappiness值...${NC}"
+    sudo sysctl vm.swappiness=$swappiness
+    
+    # 持久化设置
+    echo -e "${YELLOW}持久化swappiness设置...${NC}"
+    if grep -q "vm.swappiness" /etc/sysctl.conf; then
+        sudo sed -i "s/vm.swappiness = .*/vm.swappiness = $swappiness/" /etc/sysctl.conf
+    else
+        echo "vm.swappiness = $swappiness" | sudo tee -a /etc/sysctl.conf
+    fi
+    
+    echo -e "${GREEN}swappiness设置完成!${NC}"
+    show_swap_status
+}
+
+# 禁用SWAP
+disable_swap() {
+    check_sudo
+    echo -e "${YELLOW}禁用并删除本脚本的SWAP${NC}"
+    
+    local swap_file="$INSTALL_DIR/swapfile"
+    
+    if [ ! -f "$swap_file" ]; then
+        echo -e "${YELLOW}未找到本脚本的swap文件${NC}"
+        return
+    fi
+
+    echo -e "${RED}警告: 禁用SWAP可能会影响系统性能${NC}"
+    read -p "确认要禁用并删除本脚本的SWAP吗? [y/N]: " confirm
+    [[ "$confirm" =~ [yY] ]] || return
+    
+    # 禁用swap
+    if swapon --show | grep -q "$swap_file"; then
+        sudo swapoff "$swap_file"
+    fi
+    
+    # 删除swap文件
+    sudo rm -f "$swap_file"
+    echo -e "${GREEN}已禁用并删除本脚本的SWAP${NC}"
+}
+
+# 获取内存大小(MB)
+get_memory_size() {
+    local mem_total_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+    echo $((mem_total_kb / 1024))
+}
+
+
 
 # 检查sudo权限
 check_sudo() {
@@ -47,10 +224,18 @@ install_mariadb_server() {
     fi
 
     if ! dpkg -s mariadb-server &>/dev/null; then
-        echo -e "${YELLOW}未安装mariadb-server，正在安装...${NC}"
-        sudo apt-get update
-        sudo apt-get install -y mariadb-server
-        echo -e "${GREEN}mariadb-server 安装完成。${NC}"
+        read -p "是否要安装mariadb-server？[Y/n]: " install_confirm
+        install_confirm=${install_confirm:-Y}
+        if [[ "$install_confirm" =~ [Yy] ]]; then
+            sudo apt-get update && sudo apt-get install -y mariadb-server
+            if [ $? -ne 0 ]; then
+                echo -e "${RED}安装mariadb-server失败，请手动安装后重试${NC}"
+                exit 1
+            fi
+        else
+            echo -e "${YELLOW}请先安装mariadb-server或Mysql数据库后再运行本脚本${NC}"
+            exit 1
+        fi
     else
         echo -e "${GREEN}mariadb-server 已经安装。${NC}"
     fi
@@ -899,7 +1084,8 @@ show_menu() {
     echo "5. 切换外网访问"
     echo "6. 修改端口号"
     echo "7. 重新初始化实例"
-    echo "8. 退出"
+    echo "8. 管理SWAP设置"
+    echo "9. 退出"
     echo -e "${GREEN}═══════════════════════════════════════${NC}"
 }
 
@@ -933,7 +1119,8 @@ handle_input() {
             5) toggle_remote_access ;;
             6) change_port ;;
             7) reinitialize_instance ;;
-            8) exit 0 ;;
+            8) manage_swap ;;
+            9) exit 0 ;;
             *) echo -e "${RED}无效的选项，请重新输入。${NC}" ;;
         esac
         read -n 1 -s -r -p "按任意键继续..."
@@ -974,6 +1161,7 @@ main() {
     INSTALL_DIR="$DEFAULT_INSTALL_DIR"
     MY_CNF="$MYSQL_INSTALL_DIR/my.cnf"
     local password_file="$MYSQL_INSTALL_DIR/root.password"
+    init_swap
 
     # 读取密码
     [ -f "$password_file" ] && MYSQL_PASSWORD=$(cat "$password_file") || MYSQL_PASSWORD=""
