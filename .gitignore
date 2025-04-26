@@ -1,7 +1,8 @@
 .vscode/*
 sql/*
-mysql/*
-bin/*
+mysql*
+bin*
 core/*
 *.zip
 *.7z
+swapfile
