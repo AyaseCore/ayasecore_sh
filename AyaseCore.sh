@@ -97,6 +97,9 @@ show_memoery_status() {
     free -h | awk 'NR==3 {print "总SWAP: " $2, "已用SWAP: " $3, "空闲SWAP: " $4}'
 }
 
+set_terminal_title() {
+    echo -ne "\033]0;AyaseCore 管理界面 -- script by ayase \007"
+}
 
 # 设置SWAP大小
 set_swap_size() {
@@ -868,7 +871,7 @@ show_status() {
     
     echo -e "${GREEN}══════════════ 服务器状态 ══════════════${NC}"
     show_memoery_status
-    echo -e "${GREEN}═══════════════════════════════════════${NC}"
+    echo -e "${GREEN}════════════════════════════════════════${NC}"
     echo -e "数据库状态：${YELLOW}$MYSQL_CURRENT_STATUS${NC}"
     echo -e "AuthServer状态：${YELLOW}$AUTH_CURRENT_STATUS${NC}"
     echo -e "WorldServer状态：${YELLOW}$WORLD_CURRENT_STATUS${NC}"
@@ -877,7 +880,7 @@ show_status() {
     echo -e "端口号：${YELLOW}$PORT${NC}"
     echo -e "root密码：${YELLOW}$MYSQL_PASSWORD${NC}"
     echo -e "外网访问：${YELLOW}$bind_status${NC}"
-    echo -e "${GREEN}═══════════  script by ayase  ══════════${NC}"
+    echo -e "${GREEN}════════════════════════════════════════${NC}"
 }
 
 # 重新初始化实例
@@ -1111,7 +1114,6 @@ stop_world_server() {
     fi
 }
 
-
 # 修改realmlist远程地址
 modify_realmlist_address() {
     # 检查数据库状态
@@ -1133,7 +1135,7 @@ modify_realmlist_address() {
     echo -e "${GREEN}══════════ Realmlist服务器列表 ══════════${NC}"
     echo "$result" | awk 'NR==1 {printf "%-5s %-20s %-15s\n", $1, $2, $3; next} 
                           {printf "%-5s %-20s %-15s\n", $1, $2, $3}'
-    echo -e "${GREEN}═══════════════════════════════════════${NC}"
+    echo -e "${GREEN}════════════════════════════════════════${NC}"
 
     # 获取最大ID
     local max_id=$(echo "$result" | awk 'NR>1 {print $1}' | sort -nr | head -1)
@@ -1237,7 +1239,7 @@ show_menu() {
     echo "8. 修改realmlist远程地址"
     echo "9. 管理SWAP设置"
     echo "10. 退出"
-    echo -e "${GREEN}═══════════════════════════════════════${NC}"
+    echo -e "${GREEN}════════════════════════════════════════${NC}"
 }
 
 # 处理用户输入
@@ -1306,7 +1308,8 @@ main() {
     check_package unzip
     check_package python3
     install_mariadb_server
-    
+    set_terminal_title
+
     # 设置默认安装目录
     MYSQL_INSTALL_DIR="$DEFAULT_INSTALL_DIR/mysql"
     CORE_INSTALL_DIR="$DEFAULT_INSTALL_DIR/bin"
