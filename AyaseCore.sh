@@ -257,8 +257,8 @@ install_mariadb_server() {
 }
 
 
-# 获取安装目录
-get_install_dir() {
+# 设置安装目录
+set_install_dir() {
     local confirmed="n"
     while [ "$confirmed" != "y" ]; do
         read -p "请输入AyaseCore安装目录（默认为: $DEFAULT_INSTALL_DIR）: " user_input
@@ -348,7 +348,7 @@ check_installation() {
     
     # 如果需要初始化但安装目录未设置
     if { $core_need_init || $mysql_need_init; }; then
-        get_install_dir
+        set_install_dir
         if [ "$INSTALL_DIR" != "$DEFAULT_INSTALL_DIR" ]; then
             NEED_TO_COPY=true
         fi
