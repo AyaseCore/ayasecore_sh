@@ -396,11 +396,9 @@ check_database_status() {
         if ps -p "$pid" > /dev/null 2>&1; then
             MYSQL_CURRENT_STATUS="运行中（PID: $pid）"
             return 0
-        else
-            return 1
         fi
-        return 1
     fi
+    return 1
 }
 
 check_port() {
@@ -691,6 +689,10 @@ EOF
 
 # 设置root密码
 set_root_password() {
+    check_database_status || {
+        echo -e "${RED}数据库未运行，无法设置密码。${NC}"
+        return 1
+    }
     local old_password new_password
     local password_file="$MYSQL_INSTALL_DIR/root.password"
     local mysql_secret_path="$HOME/.mysql_secret"
@@ -1057,6 +1059,10 @@ stop_service() {
 
 # 启动AuthServer
 start_auth_server() {
+    check_database_status || {
+        echo -e "${RED}数据库未运行，无法启动AuthServer${NC}"
+        return 1
+    }
     local pid_file="$CORE_INSTALL_DIR/pid/authserver.pid"
     local start_cmd="(cd \"$CORE_INSTALL_DIR\" && ./authserver &> /dev/null &)"
     if start_service "AuthServer" "$pid_file" "$start_cmd"; then
@@ -1074,6 +1080,10 @@ stop_auth_server() {
 
 # 启动WorldServer
 start_world_server() {
+    check_database_status || {
+        echo -e "${RED}数据库未运行，无法启动WorldServer${NC}"
+        return 1
+    }
     local free_memory=$(free -m | awk 'NR==2 {print $4}')
     local swap_free_memory=$(free -m | awk 'NR==3 {print $4}')
 
@@ -1099,6 +1109,78 @@ stop_world_server() {
     if stop_service "WorldServer" "$pid_file"; then
         WORLD_CURRENT_STATUS="未运行"
     fi
+}
+
+
+# 修改realmlist远程地址
+modify_realmlist_address() {
+    # 检查数据库状态
+    check_database_status || {
+        echo -e "${RED}数据库未运行，无法修改realmlist${NC}"
+        return 1
+    }
+
+    # 查询realmlist表
+    local query="SELECT id, name, address FROM sw_auth.realmlist ORDER BY id"
+    local result=$(sudo mysql --socket="$MYSQL_INSTALL_DIR/mysql.sock" -u root -p"$MYSQL_PASSWORD" -e "$query" 2>/dev/null)
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}查询realmlist失败，请检查数据库连接${NC}"
+        return 1
+    fi
+    clear
+    # 显示服务器列表
+    echo -e "${GREEN}══════════ Realmlist服务器列表 ══════════${NC}"
+    echo "$result" | awk 'NR==1 {printf "%-5s %-20s %-15s\n", $1, $2, $3; next} 
+                          {printf "%-5s %-20s %-15s\n", $1, $2, $3}'
+    echo -e "${GREEN}═══════════════════════════════════════${NC}"
+
+    # 获取最大ID
+    local max_id=$(echo "$result" | awk 'NR>1 {print $1}' | sort -nr | head -1)
+    local back_option=$((max_id + 1))
+
+    # 获取用户选择
+    while true; do
+        read -p "请输入要修改的服务器ID(输入$back_option返回): " choice
+        if [ "$choice" -eq "$back_option" ]; then
+            return
+        fi
+
+        # 验证选择
+        if ! echo "$result" | awk '{print $1}' | grep -q "^$choice$"; then
+            echo -e "${RED}无效的服务器ID，请重新输入${NC}"
+            continue
+        fi
+
+        # 获取当前地址
+        local current_address=$(echo "$result" | awk -v id="$choice" '$1==id {print $3}')
+        echo -e "当前服务器地址: ${YELLOW}$current_address${NC}"
+
+        # 获取新地址
+        read -p "请输入新的服务器地址: " new_address
+
+        # 验证IP地址格式
+        if ! [[ $new_address =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            echo -e "${RED}无效的IP地址格式${NC}"
+            continue
+        fi
+
+        # 确认更新
+        read -p "确认将服务器ID $choice 的地址修改为 $new_address? [y/N]: " confirm
+        if [[ "$confirm" =~ [yY] ]]; then
+            local update_query="UPDATE sw_auth.realmlist SET address='$new_address' WHERE id=$choice"
+            sudo mysql --socket="$MYSQL_INSTALL_DIR/mysql.sock" -u root -p"$MYSQL_PASSWORD" -e "$update_query" 2>/dev/null
+            
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}服务器地址更新成功${NC}"
+            else
+                echo -e "${RED}服务器地址更新失败${NC}"
+            fi
+        else
+            echo -e "${YELLOW}已取消修改${NC}"
+        fi
+        return
+    done
 }
 
 # 检查和修复ICU库
@@ -1151,16 +1233,17 @@ show_menu() {
     echo "4. 修改root密码"
     echo "5. 切换外网访问"
     echo "6. 修改端口号"
-    echo "7. 重新初始化实例"
-    echo "8. 管理SWAP设置"
-    echo "9. 退出"
+    echo "7. 重新初始化实例" 
+    echo "8. 修改realmlist远程地址"
+    echo "9. 管理SWAP设置"
+    echo "10. 退出"
     echo -e "${GREEN}═══════════════════════════════════════${NC}"
 }
 
 # 处理用户输入
 handle_input() {
     while true; do
-        read -p "请选择操作 [1-8]: " choice
+        read -p "请选择操作 [1-10]: " choice
         case $choice in
             1)
                 if [ "$MYSQL_CURRENT_STATUS" = "未运行" ]; then
@@ -1187,8 +1270,9 @@ handle_input() {
             5) toggle_remote_access ;;
             6) change_port ;;
             7) reinitialize_instance ;;
-            8) manage_swap ;;
-            9) exit 0 ;;
+            8) modify_realmlist_address ;;
+            9) manage_swap ;;
+            10) exit 0 ;;
             *) echo -e "${RED}无效的选项，请重新输入。${NC}" ;;
         esac
         read -n 1 -s -r -p "按任意键继续..."
