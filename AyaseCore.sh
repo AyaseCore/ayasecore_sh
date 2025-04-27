@@ -5,6 +5,13 @@
 
 # 全局变量声明
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+BIM_COMMAND="/usr/bin/ayasecore"
+if [ "$0" == "$BIM_COMMAND" ]; then
+    if [ -L "$0" ]; then
+        SCRIPT_DIR=$(readlink -f "$0")
+        SCRIPT_DIR=$(dirname "$SCRIPT_DIR")
+    fi
+fi
 DEFAULT_INSTALL_DIR="$SCRIPT_DIR"
 INSTALL_DIR=""
 MYSQL_INSTALL_DIR=""
@@ -367,6 +374,17 @@ check_installation() {
         echo -e "${GREEN}文件复制完成${NC}"
     fi
     
+    if { $core_need_init || $mysql_need_init; }; then
+        read -p "是否建立命令'ayasecore'？创建后可在终端任意位置输入'ayasecore'来启动AyaseCore。[Y/n]: " link_confirm
+        link_confirm=${link_confirm:-Y}
+        if [[ "$link_confirm" =~ [Yy] ]]; then
+            [ -L "$BIM_COMMAND" ] && sudo rm -f "$BIM_COMMAND"
+            sudo ln -s "$INSTALL_DIR/AyaseCore.sh" "$BIM_COMMAND"
+            echo -e "${GREEN}软链接创建成功${NC}"
+        else
+            echo -e "${YELLOW}已跳过软链接创建${NC}"
+        fi
+    fi
     return 0
 }
 
@@ -847,7 +865,7 @@ reinitialize_instance() {
         get_port
         generate_my_cnf
         initialize_database
-        start_database
+        #start_database
         echo -e "${GREEN}实例已重新初始化！${NC}"
     else
         echo -e "${YELLOW}已取消重新初始化。${NC}"
