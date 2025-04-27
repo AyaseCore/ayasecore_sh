@@ -415,7 +415,6 @@ check_port() {
     fi
 }
 
-
 # 修改端口函数
 change_port() {
     # 检查是否已经初始化
@@ -445,6 +444,12 @@ change_port() {
     # 修改配置文件
     sed -i "s/^port\s*=.*/port = $PORT/" "$MY_CNF"
     echo -e "${GREEN}端口已从 $old_port 修改为 $PORT${NC}"
+
+    read -p "是否更新AyaseCore主程序authserver和worldserver配置文件的端口？[Y/n]: " update_confirm
+    update_confirm=${update_confirm:-Y}
+    if [[ "$update_confirm" =~ [Yy] ]]; then
+        update_database_configs || return 1
+    fi
 
     # 询问是否启动
     read -p "是否立即启动数据库？[Y/n]: " start_confirm
@@ -723,6 +728,11 @@ set_root_password() {
         echo "$new_password" > "$password_file"
         MYSQL_PASSWORD=$new_password
         echo -e "${GREEN}密码设置成功！${NC}"
+        read -p "是否更新AyaseCore主程序authserver和worldserver配置文件的密码？[Y/n]: " update_confirm
+        update_confirm=${update_confirm:-Y}
+        if [[ "$update_confirm" =~ [Yy] ]]; then
+            update_database_configs || return 1
+        fi
     else
         echo -e "${RED}密码设置失败，可能原因：${NC}"
         [ $has_mysql_secret -eq 1 ] && \
@@ -733,6 +743,22 @@ set_root_password() {
     fi
 }
 
+# 更新数据库配置文件
+update_database_configs() {
+    local auth_conf="$CORE_INSTALL_DIR/config/authserver.conf"
+    local world_conf="$CORE_INSTALL_DIR/config/worldserver.conf"
+    if [ -f "$auth_conf" ]; then
+        sed -i -r "s/^(LoginDatabaseInfo\s+=\s+)\"127\.0\.0\.1;[0-9]+;root;[^;]*;sw_auth\"/\1\"127.0.0.1;$PORT;root;$MYSQL_PASSWORD;sw_auth\"/" "$auth_conf"
+        echo -e "${GREEN}AuthServer配置文件已更新。${NC}"
+    fi
+
+    if [ -f "$world_conf" ]; then
+        sed -i -r "s/^(LoginDatabaseInfo\s+=\s+)\"127\.0\.0\.1;[0-9]+;root;[^;]*;sw_auth\"/\1\"127.0.0.1;$PORT;root;$MYSQL_PASSWORD;sw_auth\"/" "$world_conf"
+        sed -i -r "s/^(WorldDatabaseInfo\s+=\s+)\"127\.0\.0\.1;[0-9]+;root;[^;]*;sw_world\"/\1\"127.0.0.1;$PORT;root;$MYSQL_PASSWORD;sw_world\"/" "$world_conf"
+        sed -i -r "s/^(CharacterDatabaseInfo\s+=\s+)\"127\.0\.0\.1;[0-9]+;root;[^;]*;sw_characters\"/\1\"127.0.0.1;$PORT;root;$MYSQL_PASSWORD;sw_characters\"/" "$world_conf"
+        echo -e "${GREEN}WorldServer配置文件已更新。${NC}"
+    fi
+}
 
 get_port() {
     local default_port=$PORT
@@ -838,9 +864,9 @@ show_status() {
         bind_status="未配置"
     fi
     
-    echo -e "\n${GREEN}══════════════ 服务器状态 ══════════════${NC}"
+    echo -e "${GREEN}══════════════ 服务器状态 ══════════════${NC}"
     show_memoery_status
-    echo -e "\n${GREEN}═══════════════════════════════════════${NC}"
+    echo -e "${GREEN}═══════════════════════════════════════${NC}"
     echo -e "数据库状态：${YELLOW}$MYSQL_CURRENT_STATUS${NC}"
     echo -e "AuthServer状态：${YELLOW}$AUTH_CURRENT_STATUS${NC}"
     echo -e "WorldServer状态：${YELLOW}$WORLD_CURRENT_STATUS${NC}"
@@ -1106,6 +1132,7 @@ show_menu() {
     check_database_status
     check_and_fix_icu_libs  
     show_status
+
     if [ "$MYSQL_CURRENT_STATUS" = "未运行" ]; then
         echo "1. 启动数据库"
     else
@@ -1206,6 +1233,12 @@ main() {
 
     # 读取密码
     [ -f "$password_file" ] && MYSQL_PASSWORD=$(cat "$password_file") || MYSQL_PASSWORD=""
+
+    #读取端口号
+    [ -f "$MY_CNF" ] && PORT=$(grep "^port" "$MY_CNF" | awk -F'=' '{print $2}' | tr -d '[:space:]')
+
+    # 启动时更新主程序authserver和worldserver的配置文件
+    update_database_configs
 
     # 检查并初始化服务
     if ! check_installation; then
