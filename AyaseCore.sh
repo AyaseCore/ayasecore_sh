@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 安装包解压
-#sudo apt update && sudo apt install -y unzip && unzip -o server-bin.zip && chmod +x AyaseCore.sh && sudo ./AyaseCore.sh
+#sudo apt update && sudo apt install -y unzip && unzip -o server-core.zip && chmod +x AyaseCore.sh && sudo ./AyaseCore.sh
 
 # 全局变量声明
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -269,11 +269,11 @@ set_install_dir() {
         INSTALL_DIR=$(realpath -m "$user_input")
         
         MYSQL_INSTALL_DIR="$INSTALL_DIR/mysql"
-        CORE_INSTALL_DIR="$INSTALL_DIR/bin"
+        CORE_INSTALL_DIR="$INSTALL_DIR/core"
         MY_CNF="$MYSQL_INSTALL_DIR/my.cnf"
         
         echo -e "安装目录设置为：${GREEN}$INSTALL_DIR${NC}"
-        echo -e "核心(bin)目录设置为：${GREEN}$INSTALL_DIR${YELLOW}/bin${NC}"
+        echo -e "核心(core)目录设置为：${GREEN}$INSTALL_DIR${YELLOW}/core${NC}"
         echo -e "数据库(mysql)目录设置为：${GREEN}$INSTALL_DIR${YELLOW}/mysql${NC}"
         
         read -p "确认路径是否正确 (y/N): " confirmed
@@ -296,20 +296,34 @@ check_core_installed() {
 init_core() {
     echo -e "${YELLOW}正在初始化核心服务...${NC}"
     
-    # 检查bin.zip是否存在
-    if [ ! -f "$SCRIPT_DIR/bin.zip" ]; then
-        echo -e "${RED}错误：找不到bin.zip文件${NC}"
+    # 检查core.zip是否存在
+    if [ ! -f "$SCRIPT_DIR/core.zip" ]; then
+        echo -e "${RED}错误：找不到core.zip文件${NC}"
         return 1
     fi
     
-    # 解压bin.zip
-    echo -e "${YELLOW}正在解压bin.zip...${NC}"
-    unzip -o "$SCRIPT_DIR/bin.zip" -d "$INSTALL_DIR"
+    # 检查core_data.zip是否存在
+    if [ ! -f "$SCRIPT_DIR/core_data.zip" ]; then
+        echo -e "${RED}错误：找不到core_data.zip文件${NC}"
+        return 1
+    fi
+
+    # 解压core.zip
+    echo -e "${YELLOW}正在解压core.zip...${NC}"
+    unzip -o "$SCRIPT_DIR/core.zip" -d "$INSTALL_DIR"
     if [ $? -ne 0 ]; then
-        echo -e "${RED}解压bin.zip失败${NC}"
+        echo -e "${RED}解压core.zip失败${NC}"
         return 1
     fi
     
+    # 解压core_data.zip
+    echo -e "${YELLOW}正在解压core_data.zip...${NC}"
+    unzip -o "$SCRIPT_DIR/core_data.zip" -d "$CORE_INSTALL_DIR"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}解压core_data.zip失败${NC}"
+        return 1
+    fi
+
     # 设置执行权限
     chmod +x "$CORE_INSTALL_DIR/authserver"
     chmod +x "$CORE_INSTALL_DIR/worldserver"
@@ -371,8 +385,9 @@ check_installation() {
     if $NEED_TO_COPY; then
         echo -e "${YELLOW}正在复制必要文件到安装目录...${NC}"
         cp "$SCRIPT_DIR/AyaseCore.sh" "$INSTALL_DIR/"
-        cp "$SCRIPT_DIR/bin.zip" "$INSTALL_DIR/"
-        [ -f "$SCRIPT_DIR/sql.zip" ] && cp "$SCRIPT_DIR/sql.zip" "$INSTALL_DIR/"
+        cp "$SCRIPT_DIR/core.zip" "$INSTALL_DIR/"
+        [ -f "$SCRIPT_DIR/mysql_data.zip" ] && cp "$SCRIPT_DIR/mysql_data.zip" "$INSTALL_DIR/"
+        [ -f "$SCRIPT_DIR/core_data.zip" ] && cp "$SCRIPT_DIR/core_data.zip" "$INSTALL_DIR/"
         chmod +x "$INSTALL_DIR/AyaseCore.sh"
         echo -e "${GREEN}文件复制完成${NC}"
     fi
@@ -581,19 +596,19 @@ initialize_database() {
     echo -e "${GREEN}数据库初始化成功。${NC}"
     
     # 询问是否解压数据库文件
-    if [ -f "$SCRIPT_DIR/sql.zip" ]; then
+    if [ -f "$SCRIPT_DIR/mysql_data.zip" ]; then
         read -p "是否要解压数据库文件到$MYSQL_INSTALL_DIR/data目录？[Y/n]: " unzip_confirm
         unzip_confirm=${unzip_confirm:-Y}
         if [[ "$unzip_confirm" =~ [Yy] ]]; then
             echo -e "${YELLOW}正在解压数据库文件...${NC}"
-            if unzip -o "$SCRIPT_DIR/sql.zip" -d "$MYSQL_INSTALL_DIR/data"; then
+            if unzip -o "$SCRIPT_DIR/mysql_data.zip" -d "$MYSQL_INSTALL_DIR/data"; then
                 echo -e "${GREEN}数据库文件解压成功${NC}"
             else
                 echo -e "${RED}数据库文件解压失败${NC}"
             fi
         fi
     else
-        echo -e "${YELLOW}未找到数据库文件 $SCRIPT_DIR/sql.zip${NC}"
+        echo -e "${YELLOW}未找到数据库文件 $SCRIPT_DIR/mysql_data.zip${NC}"
     fi
     
 }
@@ -753,14 +768,14 @@ update_database_configs() {
     local auth_conf="$CORE_INSTALL_DIR/config/authserver.conf"
     local world_conf="$CORE_INSTALL_DIR/config/worldserver.conf"
     if [ -f "$auth_conf" ]; then
-        sed -i -r "s/^(LoginDatabaseInfo\s+=\s+)\"127\.0\.0\.1;[0-9]+;root;[^;]*;sw_auth\"/\1\"127.0.0.1;$PORT;root;$MYSQL_PASSWORD;sw_auth\"/" "$auth_conf"
+        sed -i -r "s/^(LoginDatabaseInfo\s+=\s+)\"127\.0\.0\.1;[0-9]+;root;[^;]*;auth\"/\1\"127.0.0.1;$PORT;root;$MYSQL_PASSWORD;auth\"/" "$auth_conf"
         echo -e "${GREEN}AuthServer配置文件已更新。${NC}"
     fi
 
     if [ -f "$world_conf" ]; then
-        sed -i -r "s/^(LoginDatabaseInfo\s+=\s+)\"127\.0\.0\.1;[0-9]+;root;[^;]*;sw_auth\"/\1\"127.0.0.1;$PORT;root;$MYSQL_PASSWORD;sw_auth\"/" "$world_conf"
-        sed -i -r "s/^(WorldDatabaseInfo\s+=\s+)\"127\.0\.0\.1;[0-9]+;root;[^;]*;sw_world\"/\1\"127.0.0.1;$PORT;root;$MYSQL_PASSWORD;sw_world\"/" "$world_conf"
-        sed -i -r "s/^(CharacterDatabaseInfo\s+=\s+)\"127\.0\.0\.1;[0-9]+;root;[^;]*;sw_characters\"/\1\"127.0.0.1;$PORT;root;$MYSQL_PASSWORD;sw_characters\"/" "$world_conf"
+        sed -i -r "s/^(LoginDatabaseInfo\s+=\s+)\"127\.0\.0\.1;[0-9]+;root;[^;]*;auth\"/\1\"127.0.0.1;$PORT;root;$MYSQL_PASSWORD;auth\"/" "$world_conf"
+        sed -i -r "s/^(WorldDatabaseInfo\s+=\s+)\"127\.0\.0\.1;[0-9]+;root;[^;]*;world\"/\1\"127.0.0.1;$PORT;root;$MYSQL_PASSWORD;world\"/" "$world_conf"
+        sed -i -r "s/^(CharacterDatabaseInfo\s+=\s+)\"127\.0\.0\.1;[0-9]+;root;[^;]*;characters\"/\1\"127.0.0.1;$PORT;root;$MYSQL_PASSWORD;characters\"/" "$world_conf"
         echo -e "${GREEN}WorldServer配置文件已更新。${NC}"
     fi
 }
@@ -879,7 +894,7 @@ show_status() {
     echo -e "安装目录：${YELLOW}$INSTALL_DIR${NC}"
     echo -e "端口号：${YELLOW}$PORT${NC}"
     echo -e "root密码：${YELLOW}$MYSQL_PASSWORD${NC}"
-    echo -e "外网访问：${YELLOW}$bind_status${NC}"
+    echo -e "Mysql远程访问：${YELLOW}$bind_status${NC}"
     echo -e "${GREEN}════════════════════════════════════════${NC}"
 }
 
@@ -1123,7 +1138,7 @@ modify_realmlist_address() {
     }
 
     # 查询realmlist表
-    local query="SELECT id, name, address FROM sw_auth.realmlist ORDER BY id"
+    local query="SELECT id, name, address FROM auth.realmlist ORDER BY id"
     local result=$(sudo mysql --socket="$MYSQL_INSTALL_DIR/mysql.sock" -u root -p"$MYSQL_PASSWORD" -e "$query" 2>/dev/null)
     
     if [ $? -ne 0 ]; then
@@ -1170,7 +1185,7 @@ modify_realmlist_address() {
         # 确认更新
         read -p "确认将服务器ID $choice 的地址修改为 $new_address? [y/N]: " confirm
         if [[ "$confirm" =~ [yY] ]]; then
-            local update_query="UPDATE sw_auth.realmlist SET address='$new_address' WHERE id=$choice"
+            local update_query="UPDATE auth.realmlist SET address='$new_address' WHERE id=$choice"
             sudo mysql --socket="$MYSQL_INSTALL_DIR/mysql.sock" -u root -p"$MYSQL_PASSWORD" -e "$update_query" 2>/dev/null
             
             if [ $? -eq 0 ]; then
@@ -1233,7 +1248,7 @@ show_menu() {
         echo "3. 停止WorldServer"
     fi
     echo "4. 修改root密码"
-    echo "5. 切换外网访问"
+    echo "5. 切换Mysql远程访问"
     echo "6. 修改端口号"
     echo "7. 重新初始化实例" 
     echo "8. 修改realmlist远程地址"
@@ -1312,7 +1327,7 @@ main() {
 
     # 设置默认安装目录
     MYSQL_INSTALL_DIR="$DEFAULT_INSTALL_DIR/mysql"
-    CORE_INSTALL_DIR="$DEFAULT_INSTALL_DIR/bin"
+    CORE_INSTALL_DIR="$DEFAULT_INSTALL_DIR/core"
     INSTALL_DIR="$DEFAULT_INSTALL_DIR"
     MY_CNF="$MYSQL_INSTALL_DIR/my.cnf"
     local password_file="$MYSQL_INSTALL_DIR/root.password"
