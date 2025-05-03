@@ -16,6 +16,8 @@ DEFAULT_INSTALL_DIR="$SCRIPT_DIR"
 INSTALL_DIR=""
 MYSQL_INSTALL_DIR=""
 CORE_INSTALL_DIR=""
+WORLDSERVER_FIFO=""
+WORLDSERVER_CONSOLE_LOG=""
 PORT="3333"
 MYSQL_USER="root"
 MYSQL_PASSWORD=""
@@ -1011,7 +1013,6 @@ stop_auth_server() {
         AUTH_CURRENT_STATUS="未运行"
     fi
 }
-
 # 启动WorldServer
 start_world_server() {
     check_database_status || {
@@ -1030,8 +1031,14 @@ start_world_server() {
         echo -e "${RED}可用内存小于2.5G！worldserver可能无法启动, 请设置swap或增加内存。${NC}"
         return 1
     fi
+    [ -f "$WORLDSERVER_FIFO" ] && rm -f "$WORLDSERVER_FIFO"
+    [ -f "$WORLDSERVER_CONSOLE_LOG" ] && rm -f "$WORLDSERVER_CONSOLE_LOG"
+    mkfifo "$WORLDSERVER_FIFO" 2>/dev/null || true
+    
+    # local start_cmd="(cd \"$CORE_INSTALL_DIR\" && ./worldserver &> /dev/null &)"
+    local start_cmd="(cd \"$CORE_INSTALL_DIR\" && tail -f \"$WORLDSERVER_FIFO\" | ./worldserver >> \"$WORLDSERVER_CONSOLE_LOG\" 2>&1 &)"
+
     local pid_file="$CORE_INSTALL_DIR/pid/worldserver.pid"
-    local start_cmd="(cd \"$CORE_INSTALL_DIR\" && ./worldserver &> /dev/null &)"
     if start_service "WorldServer" "$pid_file" "$start_cmd"; then
         WORLD_CURRENT_STATUS="运行中"
     fi
@@ -1042,7 +1049,55 @@ stop_world_server() {
     local pid_file="$CORE_INSTALL_DIR/pid/worldserver.pid"
     if stop_service "WorldServer" "$pid_file"; then
         WORLD_CURRENT_STATUS="未运行"
+        rm -f "$WORLDSERVER_FIFO"
+        rm -f "$WORLDSERVER_CONSOLE_LOG"
     fi
+}
+
+worldserver_console() {
+    clear
+    local log_lines_file="$CORE_INSTALL_DIR/data/logs/log_setlines"
+    local log_lines=20  # 默认20行
+
+    if [ -f "$log_lines_file" ]; then
+        log_lines=$(cat "$log_lines_file")
+    fi
+
+    if [ "$WORLD_CURRENT_STATUS" == "未运行" ]; then
+        echo -e "${RED}WorldServer未运行！${NC}"
+        return
+    fi
+
+    trap "rm -f '$WORLDSERVER_FIFO'; clear; echo -e '${YELLOW}WorldServer控制台已退出.${NC}'; sleep 1" EXIT
+
+    while true; do
+        clear
+        echo -e "${YELLOW}══════════ WorldServer控制台 ══════════${NC}"
+        tail -n "$log_lines" "$WORLDSERVER_CONSOLE_LOG"
+        echo -e "\n${YELLOW}════════ 实时日志内容（最新${GREEN}$log_lines${YELLOW}行）════════${NC}"
+        echo -e "${GREEN}输入'${RED}exit${GREEN}' 退出${NC}"
+        echo -e "${GREEN}输入'${RED}setlines <number>${GREEN}' 设置日志行数${NC}"
+        echo -e "${GREEN}输入除上述以外的内容将发到WorldServer执行${NC}"
+        
+        read -p "请输入命令: " cmd
+        if [ "$cmd" == "exit" ]; then
+            break
+        elif [[ "$cmd" == setlines* ]]; then
+            new_log_lines=$(echo "$cmd" | awk '{print $2}')
+            if [[ "$new_log_lines" =~ ^[0-9]+$ ]]; then
+                log_lines="$new_log_lines"
+                echo "$log_lines" > "$log_lines_file" 
+                echo -e "${YELLOW}日志行数已设置为: $log_lines${NC}"
+            else
+                echo -e "${RED}无效的行数设置，请输入一个数字。${NC}"
+            fi
+            sleep 0.5
+        else
+            # 发送命令到FIFO
+            echo "$cmd" > "$WORLDSERVER_FIFO"
+        fi
+        sleep 0.1 
+    done
 }
 
 # 修改realmlist远程地址
@@ -1169,14 +1224,15 @@ show_menu() {
     echo "7. 重新初始化实例" 
     echo "8. 修改realmlist远程地址"
     echo "9. 管理SWAP设置"
-    echo "10. 退出"
+    echo "10. 进入WorldServer控制台"
+    echo "11. 退出"    
     echo -e "${GREEN}════════════════════════════════════════${NC}"
 }
 
 # 处理用户输入
 handle_input() {
     while true; do
-        read -p "请选择操作 [1-10]: " choice
+        read -p "请选择操作 [1-11]: " choice
         case $choice in
             1)
                 if [ "$MYSQL_CURRENT_STATUS" = "未运行" ]; then
@@ -1205,7 +1261,8 @@ handle_input() {
             7) reinitialize_instance ;;
             8) modify_realmlist_address ;;
             9) manage_swap ;;
-            10) exit 0 ;;
+            10) worldserver_console  ;;
+            11) exit 0 ;;
             *) echo -e "${RED}无效的选项，请重新输入。${NC}" ;;
         esac
         read -n 1 -s -r -p "按任意键继续..."
@@ -1244,6 +1301,9 @@ main() {
     # 设置默认安装目录
     MYSQL_INSTALL_DIR="$DEFAULT_INSTALL_DIR/mysql"
     CORE_INSTALL_DIR="$DEFAULT_INSTALL_DIR/core"
+    WORLDSERVER_FIFO="$CORE_INSTALL_DIR/fifo/worldserver.fifo"
+    [ -d "$CORE_INSTALL_DIR/fifo" ] || mkdir -p "$CORE_INSTALL_DIR/fifo"
+    WORLDSERVER_CONSOLE_LOG="$CORE_INSTALL_DIR/data/logs/worldserver_console.log"
     INSTALL_DIR="$DEFAULT_INSTALL_DIR"
     MY_CNF="$MYSQL_INSTALL_DIR/my.cnf"
     local password_file="$MYSQL_INSTALL_DIR/root.password"
