@@ -1307,7 +1307,6 @@ main() {
     MYSQL_INSTALL_DIR="$DEFAULT_INSTALL_DIR/mysql"
     CORE_INSTALL_DIR="$DEFAULT_INSTALL_DIR/core"
     WORLDSERVER_FIFO="$CORE_INSTALL_DIR/fifo/worldserver.fifo"
-    [ -d "$CORE_INSTALL_DIR/fifo" ] || mkdir -p "$CORE_INSTALL_DIR/fifo"
     WORLDSERVER_CONSOLE_LOG="$CORE_INSTALL_DIR/data/logs/worldserver_console.log"
     INSTALL_DIR="$DEFAULT_INSTALL_DIR"
     MY_CNF="$MYSQL_INSTALL_DIR/my.cnf"
@@ -1328,7 +1327,7 @@ main() {
         echo -e "${RED}服务初始化失败或已取消${NC}"
         exit 1
     fi
-
+    [ -d "$CORE_INSTALL_DIR/fifo" ] || mkdir -p "$CORE_INSTALL_DIR/fifo"
     show_menu
     handle_input
 }
