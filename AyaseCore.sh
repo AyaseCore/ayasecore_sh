@@ -1028,9 +1028,15 @@ start_world_server() {
 
     local need_memory=2500 # 2.5G
     if [ "$total_free_memory" -lt "$need_memory" ]; then
-        echo -e "${RED}可用内存小于2.5G！worldserver可能无法启动, 请设置swap或增加内存。${NC}"
-        return 1
+        echo -e "${RED}可用内存小于2.5G！worldserver可能无法启动。您确定要继续吗？(y/N)${NC}"
+        read -t 30 -n 1 user_input
+        echo -e "\n" 
+        if [[ "$user_input" != "y" && "$user_input" != "Y" ]]; then
+            echo -e "${RED}未选择继续，启动中止。请设置swap或增加内存。${NC}"
+            return 1
+        fi
     fi
+
     [ -f "$WORLDSERVER_FIFO" ] && rm -f "$WORLDSERVER_FIFO"
     [ -f "$WORLDSERVER_CONSOLE_LOG" ] && rm -f "$WORLDSERVER_CONSOLE_LOG"
     mkfifo "$WORLDSERVER_FIFO" 2>/dev/null || true
@@ -1328,6 +1334,7 @@ main() {
         exit 1
     fi
     [ -d "$CORE_INSTALL_DIR/fifo" ] || mkdir -p "$CORE_INSTALL_DIR/fifo"
+    [ -d "$CORE_INSTALL_DIR/pid" ] || mkdir -p "$CORE_INSTALL_DIR/pid"
     show_menu
     handle_input
 }
