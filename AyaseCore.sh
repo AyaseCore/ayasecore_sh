@@ -1181,6 +1181,11 @@ check_and_fix_icu_libs() {
         local lib_path="$system_lib_dir/$lib"
         local real_lib_path="$script_lib_dir/${lib}.1"
 
+        # 如果lib下所需icu库不存在, 说明不需要特意修复
+        if [ ! -f "$real_lib_path" ]; then
+            return
+        fi
+
         if [ -L "$lib_path" ]; then
             local link_target=$(realpath "$lib_path")
             if [ ! -f "$link_target" ]; then
