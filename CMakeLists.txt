@@ -1,0 +1,6 @@
+
+install(FILES
+  ${CMAKE_CURRENT_SOURCE_DIR}/AyaseCore.sh
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/"
+)
+
