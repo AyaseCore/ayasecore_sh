@@ -5,14 +5,34 @@
 
 # 全局变量声明
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+
 BIM_COMMAND="/usr/bin/ayasecore"
 if [ "$0" == "$BIM_COMMAND" ]; then
     if [ -L "$0" ]; then
-        SCRIPT_DIR=$(readlink -f "$0")
+        SCRIPT_DIR=$(readlink "$0")
         SCRIPT_DIR=$(dirname "$SCRIPT_DIR")
     fi
 fi
-DEFAULT_INSTALL_DIR="$SCRIPT_DIR"
+
+URL_BASE="https://github.com/AyaseCore/ayasecore_sh/releases/download/20250502"
+#URL_PREFIX="https://gh-proxy.ygxz.in/$URL_BASE"
+URL_PREFIX="${1:-""}$URL_BASE"
+URL_CORE_DATA="$URL_PREFIX/core_data.zip"
+URL_MYSQL_DATA="$URL_PREFIX/mysql_data.zip"
+URL_CORE=""
+SYSTEM_ARCH=$(uname -m)
+if [ "$SYSTEM_ARCH" == "x86_64" ]; then
+    URL_CORE="$URL_PREFIX/core.zip"
+elif [ "$SYSTEM_ARCH" == "aarch64" ]; then
+    URL_CORE="$URL_PREFIX/core_arm64.zip"
+fi
+
+if [ "$SCRIPT_DIR" == "/tmp" ]; then
+    DEFAULT_INSTALL_DIR="/home/AyaseCore"
+else
+    DEFAULT_INSTALL_DIR="$SCRIPT_DIR"
+fi
+
 INSTALL_DIR=""
 MYSQL_INSTALL_DIR=""
 CORE_INSTALL_DIR=""
@@ -298,21 +318,15 @@ check_core_installed() {
 init_core() {
     echo -e "${YELLOW}正在初始化核心服务...${NC}"
     
-    # 检查core.zip是否存在
-    if [ ! -f "$SCRIPT_DIR/core.zip" ]; then
-        echo -e "${RED}错误：找不到core.zip文件${NC}"
-        return 1
-    fi
+    # 下载core.zip
+    download_with_md5_check "core.zip" "$URL_CORE" || return 1
     
-    # 检查core_data.zip是否存在
-    if [ ! -f "$SCRIPT_DIR/core_data.zip" ]; then
-        echo -e "${RED}错误：找不到core_data.zip文件${NC}"
-        return 1
-    fi
+    # 下载core_data.zip
+    download_with_md5_check "core_data.zip" "$URL_CORE_DATA" || return 1
 
     # 解压core.zip
     echo -e "${YELLOW}正在解压core.zip...${NC}"
-    unzip -o "$SCRIPT_DIR/core.zip" -d "$INSTALL_DIR"
+    unzip -o "$SCRIPT_DIR/core.zip" -d "$CORE_INSTALL_DIR"
     if [ $? -ne 0 ]; then
         echo -e "${RED}解压core.zip失败${NC}"
         return 1
@@ -380,6 +394,7 @@ check_installation() {
     
     if $mysql_need_init; then
         echo -e "${YELLOW}正在初始化数据库服务...${NC}"
+        download_with_md5_check "mysql_data.zip" "$URL_MYSQL_DATA" || return 1
         database_init || return 1
     fi
     
@@ -895,7 +910,7 @@ show_status() {
     
     echo -e "安装目录：${YELLOW}$INSTALL_DIR${NC}"
     echo -e "端口号：${YELLOW}$PORT${NC}"
-    echo -e "root密码：${YELLOW}$MYSQL_PASSWORD${NC}"
+    echo -e "root密码：${YELLOW}${MYSQL_PASSWORD:-${RED}密码为空, 请修改密码}${NC}"
     echo -e "Mysql远程访问：${YELLOW}$bind_status${NC}"
     echo -e "${GREEN}════════════════════════════════════════${NC}"
 }
@@ -1177,6 +1192,111 @@ modify_realmlist_address() {
     done
 }
 
+
+# 下载文件并校验MD5
+# 参数: $1 - 要下载的文件
+#       $2 - url
+# 返回值: 0 - 成功, 1 - 失败
+download_with_md5_check() {
+    local filename="$1"
+    local url="$2"
+    local md5_url="${url}.md5"
+    local md5_file="${filename}.md5"
+    local expected_md5=""
+    local actual_md5=""
+    local max_retries=3
+    local retry_count=0
+
+    # 下载MD5校验文件
+    download_md5_file() {
+        echo -e "${BLUE}正在下载 $filename MD5校验文件...${NC}"
+        wget --show-progress -O "$SCRIPT_DIR/$md5_file" "$md5_url"
+        if [ $? -ne 0 ]; then
+            echo -e "${YELLOW}下载 $filename MD5校验文件失败${NC}"
+            return 1
+        fi
+        return 0
+    }
+
+    # 获取预期的MD5值
+    get_expected_md5() {
+        expected_md5=$(cat "$SCRIPT_DIR/$md5_file" | awk '{print $1}')
+        if [ -z "$expected_md5" ]; then
+            echo -e "${YELLOW}无法读取 $filename MD5校验值${NC}"
+            return 1
+        fi
+        return 0
+    }
+
+    # 校验文件MD5
+    verify_md5() {
+        echo -e "${BLUE}正在校验 $filename MD5...${NC}"
+        actual_md5=$(md5sum "$SCRIPT_DIR/$filename" | awk '{print $1}')
+        if [ "$expected_md5" != "$actual_md5" ]; then
+            echo -e "${RED}$filename MD5校验失败${NC}"
+            echo -e "预期MD5: $expected_md5"
+            echo -e "实际MD5: $actual_md5"
+            return 1
+        fi
+        return 0
+    }
+
+    # 下载文件
+    download_file() {
+        echo -e "${BLUE}正在下载 $filename...${NC}"
+        wget --show-progress -O "$SCRIPT_DIR/$filename.tmp" "$url"
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}下载 $filename 失败${NC}"
+            rm -f "$SCRIPT_DIR/$filename.tmp"
+            return 1
+        fi
+        # 验证下载完整性
+        if [ ! -s "$SCRIPT_DIR/$filename.tmp" ]; then
+            echo -e "${RED}下载的文件为空，可能下载中断${NC}"
+            rm -f "$SCRIPT_DIR/$filename.tmp"
+            return 1
+        fi
+        mv "$SCRIPT_DIR/$filename.tmp" "$SCRIPT_DIR/$filename"
+        return 0
+    }
+
+    # 主逻辑
+    while [ $retry_count -lt $max_retries ]; do
+        ((retry_count++))
+        
+        # 如果文件已存在，先校验MD5
+        if [ -f "$SCRIPT_DIR/$filename" ]; then
+            if download_md5_file && get_expected_md5; then
+                if verify_md5; then
+                    echo -e "${GREEN}文件 $filename 已存在且校验通过${NC}"
+                    return 0
+                else
+                    echo -e "${YELLOW}文件 $filename 已存在但校验失败，将重新下载${NC}"
+                    rm -f "$SCRIPT_DIR/$filename"
+                fi
+            else
+                echo -e "${YELLOW}无法获取MD5校验文件，将重新下载${NC}"
+                rm -f "$SCRIPT_DIR/$filename"
+            fi
+        fi
+
+        # 下载文件和MD5校验文件
+        if download_file && download_md5_file && get_expected_md5 && verify_md5; then
+            echo -e "${GREEN}$filename 下载并校验成功${NC}"
+            return 0
+        fi
+
+        echo -e "${YELLOW}第 $retry_count 次尝试失败，剩余重试次数: $((max_retries - retry_count))${NC}"
+        [ -f "$SCRIPT_DIR/$filename" ] && rm -f "$SCRIPT_DIR/$filename"
+        [ -f "$SCRIPT_DIR/$md5_file" ] && rm -f "$SCRIPT_DIR/$md5_file"
+    done
+
+    echo -e "${RED}无法下载有效的 $filename 文件，已达到最大重试次数${NC}"
+    return 1
+}
+
+
+
 # 检查和修复ICU库
 check_and_fix_icu_libs() {
     local icu_libs=("libicudata.so.70" "libicui18n.so.70" "libicuuc.so.70")
@@ -1229,7 +1349,7 @@ show_menu() {
     else
         echo "3. 停止WorldServer"
     fi
-    echo "4. 修改root密码"
+    echo "4. 修改Mysql账户[root]密码"
     echo "5. 切换Mysql远程访问"
     echo "6. 修改端口号"
     echo "7. 重新初始化实例" 
@@ -1317,8 +1437,14 @@ main() {
     INSTALL_DIR="$DEFAULT_INSTALL_DIR"
     MY_CNF="$MYSQL_INSTALL_DIR/my.cnf"
     local password_file="$MYSQL_INSTALL_DIR/root.password"
-    init_swap
 
+    # 检查并初始化服务
+    if ! check_installation; then
+        echo -e "${RED}服务初始化失败或已取消${NC}"
+        exit 1
+    fi
+
+    init_swap
     # 读取密码
     [ -f "$password_file" ] && MYSQL_PASSWORD=$(cat "$password_file") || MYSQL_PASSWORD=""
 
@@ -1328,11 +1454,6 @@ main() {
     # 启动时更新主程序authserver和worldserver的配置文件
     update_database_configs
 
-    # 检查并初始化服务
-    if ! check_installation; then
-        echo -e "${RED}服务初始化失败或已取消${NC}"
-        exit 1
-    fi
     [ -d "$CORE_INSTALL_DIR/fifo" ] || mkdir -p "$CORE_INSTALL_DIR/fifo"
     [ -d "$CORE_INSTALL_DIR/pid" ] || mkdir -p "$CORE_INSTALL_DIR/pid"
     show_menu
