@@ -1,8 +1,5 @@
 #!/bin/bash
 
-# 安装包解压
-#sudo apt update && sudo apt install -y unzip && unzip -o server-core.zip && chmod +x AyaseCore.sh && sudo ./AyaseCore.sh
-
 # 全局变量声明
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
@@ -299,8 +296,8 @@ set_install_dir() {
         echo -e "数据库(mysql)目录设置为：${GREEN}$INSTALL_DIR${YELLOW}/mysql${NC}"
         
         read -p "确认路径是否正确 (y/N): " confirmed
-        if [ "$confirmed" == "n" ]; then
-            echo "请重新输入安装目录。"
+        if [ "$confirmed" == "y" ]; then
+            mkdir -p "$INSTALL_DIR" "$CORE_INSTALL_DIR" "$MYSQL_INSTALL_DIR"
         fi
     done
 }
@@ -382,9 +379,6 @@ check_installation() {
     # 如果需要初始化但安装目录未设置
     if { $core_need_init || $mysql_need_init; }; then
         set_install_dir
-        if [ "$INSTALL_DIR" != "$DEFAULT_INSTALL_DIR" ]; then
-            NEED_TO_COPY=true
-        fi
     fi
     
     # 执行初始化
@@ -398,16 +392,8 @@ check_installation() {
         database_init || return 1
     fi
     
-    # 如果需要复制文件
-    if $NEED_TO_COPY; then
-        echo -e "${YELLOW}正在复制必要文件到安装目录...${NC}"
-        cp "$SCRIPT_DIR/AyaseCore.sh" "$INSTALL_DIR/"
-        cp "$SCRIPT_DIR/core.zip" "$INSTALL_DIR/"
-        [ -f "$SCRIPT_DIR/mysql_data.zip" ] && cp "$SCRIPT_DIR/mysql_data.zip" "$INSTALL_DIR/"
-        [ -f "$SCRIPT_DIR/core_data.zip" ] && cp "$SCRIPT_DIR/core_data.zip" "$INSTALL_DIR/"
-        chmod +x "$INSTALL_DIR/AyaseCore.sh"
-        echo -e "${GREEN}文件复制完成${NC}"
-    fi
+    cp "$SCRIPT_DIR/AyaseCore.sh" "$INSTALL_DIR/"
+    chmod +x "$INSTALL_DIR/AyaseCore.sh"
     
     if { $core_need_init || $mysql_need_init; }; then
         read -p "是否建立命令'ayasecore'？创建后可在终端任意位置输入'ayasecore'来启动AyaseCore。[Y/n]: " link_confirm
